@@ -1,0 +1,428 @@
+---
+title: 'Protocol scRNAseq - Part V: Pseudobulk and Differential Expression'
+author: "Lena Böhringer"
+output:
+  html_document:
+    df_print: paged
+---
+```{r, results='hide'}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stats) 
+library(pheatmap) 
+library(ggdendro) 
+library(DESeq2)
+```
+
+# Correlations and Hierarchical Clustering
+
+
+The next question in the scRNA-Seq workflow could be how similar/different the clusters are from each other and how the cell types are related. We can do this by looking at and comparing the gene expression of the individual clusters. For this we can calculate the average expression and compute correlations between the clusters. However, average expression can be influenced by the number of genes or counts in the clusters. Here we can also use the specificity index to compensate such issues.
+
+To estimate how similar/different the clusters are we cannot look at the distance of the different cluster on UMAP. This is because UMAP is good in preserving local distance, meaning that cells that clustered together are highly likely similarly in their expression, but global distances are not well preserved and mostly have nothing to do with how similar two clusters are. Also when using non-linear dimension reduction analysis such as UMAP, the axis do not correlate to the original features anymore, which also implies that we cannot draw conclusion about correlation by  looking at the distance between clusters. In some cases the algorithm would just put a cluster where there is enough space. Thus, we need other methods like pseudo-bulk to find out relations between clusters.
+
+
+
+
+```{r}
+ple5 <- readRDS("srt_04_ple5.rds")
+
+DimPlot(ple5, label = T)
+```
+
+
+## Subset dataset
+
+To make the clusters more comparable to each other we have to downsample the clusters. This adjusts the size of the different cluster, so they are more or less the same size.
+
+```{r}
+table(ple5$broad.cell.types)
+```
+
+If we would downsample to the smallest cluster (Immune.2) we would have the same size in each cluster but would loose a lot of cells in the other clusters. Thus we take a higher number for downsampling.
+
+```{r}
+ple5.small <- subset(ple5, downsample = 40)
+DimPlot(ple5.small)
+```
+
+## Average expression across cell types
+
+Now we find the average expression across the different cell types and save the averaged dataset as dataframe.
+
+```{r}
+ple5.avg <- AverageExpression(object = ple5.small, return.seurat = T)
+```
+
+
+```{r}
+head(data.frame(ple5.avg@assays[["RNA"]]@counts))
+head(data.frame(ple5.avg@assays[["RNA"]]@data))
+head(data.frame(ple5.avg@assays[["RNA"]]@scale.data))
+```
+
+```{r}
+ple5_avg.df <- data.frame(ple5.avg@assays[["RNA"]]@counts)
+
+head(ple5_avg.df)
+```
+
+## Correlation Calculation
+
+### correlation btw. cell types based on their average gene expression profiles
+
+For the computation of the correlations we use the matrix instead of dataframe.
+
+```{r}
+matrix_cor_avg <- cor(as.matrix(ple5_avg.df), method = "spearman")
+```
+
+
+```{r}
+matrix_cor_avg[1:5, 1:5]
+```
+
+```{r}
+heatmap <- pheatmap(matrix_cor_avg,
+                    main = "Average Expression, Spearman",
+                    cluster_cols = T,
+                    cluster_rows = T,
+                    scale = "none",
+                    treeheight_row = 0,
+                    treeheight_col = 40,
+                    fontsize_row = 7,
+                    display_numbers = F)
+```
+
+The neuronal cells correlate well with each other, however we have the OPCs clustered together with the neuronal cells. Ideally, the OPCs should be closer related to the Oligos.
+
+
+
+### hierachical clustering
+
+```{r}
+cluster.tree.avg <- hclust(as.dist(1-matrix_cor_avg))
+```
+
+```{r}
+ggdendrogram(cluster.tree.avg) + ggtitle("Average Expression, Spearman")
+```
+
+Also in this diagramm we can see that OPCs are closer related to neuronal cells, which we would not expect. Since the average expressioncan be influenced by count distribution, we next look at UMI and feature counts by cell type and later calculate the specificity index, which should reduce this effect.
+
+
+### Distribution of UMIs and genes per cell type
+
+```{r}
+ple5.small@meta.data %>% 
+  ggplot(aes(x = nCount_RNA, fill = broad.cell.types)) +
+  geom_boxplot(alpha = 0.2) +
+  theme_classic() +
+  theme(axis.text.y = element_blank()) +
+  ggtitle("Counts per Cell")
+  
+```
+
+The clusters differ in their read counts. While some have a lot of reads (e.g. non-TE) others such as EG or Oligo cluster have only few.
+
+
+```{r}
+ple5.small@meta.data %>%
+  ggplot(aes(x = nFeature_RNA, fill = broad.cell.types)) +
+  geom_boxplot(alpha = 0.2) +
+  theme_classic() +
+  theme(axis.text.y = element_blank()) +
+  ggtitle("Genes per Cell")
+```
+
+The number of genes the different clusters express vary even more between the clusters. The vascular cell type expresses the least number of different genes, while non-TE expresses the highest number of differnt genes.
+
+
+### Specificity Index
+
+The number of genes/counts per cell can influence the average expression. As an alternative we can calculate the specificity index, which reduces these effects.
+
+```{r}
+ple5_avg.df[1:5,1:5]
+```
+
+```{r}
+ple5_avg.df <- dplyr::mutate(ple5_avg.df, "gene" = rownames(ple5_avg.df))
+
+head(ple5_avg.df)
+```
+
+```{r}
+ple5_spec <- tidyr::gather(ple5_avg.df,
+                           key = "cell.type",
+                           value = "avg_expression", -gene) #gather means it takes every column of cell type and puts it in one colum -> value that will be associate to that gene of one cell type
+
+head(ple5_spec, n = 10)
+```
+
+```{r}
+ple5_spec <- ple5_spec %>% # take this object that then group by gene -> gene is appearing several times in the colum gene
+  dplyr::group_by(gene)
+```
+
+
+```{r}
+ple5_spec <- dplyr::filter(ple5_spec, sum(avg_expression) > 0) # removes noise: remove genes that have an average expression of 0
+```
+
+```{r}
+ple5_spec <- dplyr::mutate(ple5_spec, "avg_total" = mean(avg_expression)) 
+
+head(ple5_spec)
+```
+
+
+```{r}
+ple5_spec <- dplyr::mutate(ple5_spec, "spec_index" = avg_expression / avg_total)
+
+head(ple5_spec)
+```
+
+```{r}
+ple5_spec <- ungroup(ple5_spec) #remove ungrouping factor 
+
+ple5_spec <- dplyr::select(ple5_spec, #and remove unnessasary columns
+                           - avg_expression,
+                           - avg_total)
+
+head(ple5_spec)
+```
+
+```{r}
+ple5_spec <- tidyr::spread(ple5_spec, # convert dataframe back to wirde format
+                           cell.type, 
+                           spec_index, 
+                           fill = 0)
+
+head(ple5_spec)
+```
+
+```{r}
+ple5_spec <- as.data.frame(ple5_spec)
+```
+
+
+```{r}
+rownames(ple5_spec) <- ple5_spec$gene # reassign rownames
+
+head(ple5_spec)
+```
+
+
+```{r}
+ple5_spec <- dplyr::select(ple5_spec, -gene) #remove gene column
+```
+
+
+```{r}
+head(ple5_spec)
+```
+
+Now we can make the correlation matrix based on the specificity index
+
+```{r}
+matrix_cor_spec <- cor(as.matrix(ple5_spec), method="spearman")
+matrix_cor_spec[1:5,1:5]
+```
+
+
+```{r}
+
+heatmap <- pheatmap(matrix_cor_spec,
+                    main = "Specificity Index, Spearman",
+                    cluster_cols = TRUE,
+                    cluster_rows = TRUE,
+                    scale="none",
+                    treeheight_row = 0,
+                    treeheight_col = 40,
+                    fontsize_row = 7,
+                    display_numbers = FALSE)
+
+heatmap
+```
+
+The correlation between OPC and the neuronal cells is reduced.
+
+```{r}
+cluster.tree.spec <- hclust(as.dist(1 - matrix_cor_spec))
+
+ggdendrogram(cluster.tree.spec) + ggtitle("Specificity Index, Spearman")
+```
+
+However, the dendrogram still shows the OPCs more closely related to the neuronal cells. also the connections of the other branches changed.
+In Part 4, we could see some  expression of neuronal markers in rhe OPC cluster, but due to expression of several OPC markers this cluster was annotated as OPC. The expression of the neuronal markers could be the reason why we cannot remove the OPC branch from the neuronal part.
+
+
+
+# Differential Expression Analysis with DESEQ2
+
+Tests for calculating differential expression such as the Wilcoxon sum rank test, which we used for example to find markers, look at the cells individually and are thus often biased for highly expressed genes. Since we don't want to consider the individual cells but look at the overall expression of the clusters, methods that use the summed gene expression for each cluster, such as pseudo-bulk analyses, are better suited to compare the different clusters. These methods (e.g. DEseq2) increase the within-sample variance of the cluster and reduce the bias on highly expressed and as well as the effect of dropouts.
+
+
+When we perform multiple statistical tests, for instance like we do when comparing the gene expression of the cells in our scRNA-seq data, the probability of false positive discovery increases with the number of tests we do. Since we have many thousand cells we do a lot of comparisons between these cells. Therefore, we need to adjust the p-values with methods such as the bonferroni method or the false discovery rate correction.
+
+
+
+```{r}
+rm(list = ls()) 
+gc()
+```
+
+```{r}
+ple5 <- readRDS("srt_04_ple5.rds")
+```
+
+
+```{r}
+DimPlot(ple5)
+```
+
+AggregateExpression will sum up all expression of the cells in a cluster. We do this since we wont downsample in this approach.
+
+```{r}
+ple5_sum <- AggregateExpression(ple5, return.seurat = T)
+
+ple5_sum
+```
+
+
+```{r}
+counts <- as.matrix(ple5_sum@assays$RNA@counts)
+
+counts[1:5, ]
+```
+
+```{r}
+counts <- round(counts)
+counts[1:5, ]
+```
+
+
+We now subset our data and will only look at excitatory neurons (TEGLU and non TE) and inhibitory neurons (TEGABA)
+
+```{r}
+neuron.counts <- counts[,c("TEGLU", "non-TE", "TEGABA")]
+```
+
+
+```{r}
+neuron.counts[1:3,]
+```
+
+
+```{r}
+coldata <- data.frame("cell.type" = as.factor(colnames(neuron.counts)),
+                      "broad.cell.type" = c("GLUTA", "GLUTA", "GABA"))
+
+head(coldata)
+```
+
+
+```{r}
+rownames(coldata) <- coldata$cell.type
+```
+
+
+Now we check whether col and rownames are the same, so we dont get an error later on.
+
+```{r}
+rownames(coldata)
+```
+
+```{r}
+colnames(neuron.counts)
+```
+
+Now we create DESeq2 object
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = neuron.counts,
+                              colData = coldata,
+                              design = ~ broad.cell.type)
+
+```
+
+```{r}
+dds
+```
+
+
+```{r}
+dds <- DESeq(dds)
+```
+
+```{r}
+res <- results(dds)
+
+summary(res)
+```
+We have 173 genes that are upregulated and 132 genes that are downregulated.
+
+```{r}
+res.df <- as.data.frame(results(dds))
+
+head(res.df)
+```
+
+
+```{r}
+res.df <- dplyr::arrange(res.df, padj) #order from lowest to higherst
+```
+
+
+```{r}
+head(res.df)
+```
+
+### Plot the top 20 differentialy  expressed genes
+
+```{r}
+top20 <- rownames(res.df)[1:20]
+```
+
+
+```{r}
+df <- as.data.frame(colData(dds)[,c("broad.cell.type", "cell.type")])
+
+pheatmap(assay(dds)[top20,], 
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE,
+         show_rownames=TRUE, 
+         annotation_col=df, 
+         scale="row")
+```
+
+Now we see which genes are upregulated/downregulated in the different cell types 
+
+We can also look at specific genes that we expect in the glutaminergic or GABAergic group.
+
+```{r}
+plotCounts(dds, 
+           gene="SLC17A7", 
+           intgroup = "broad.cell.type")
+```
+
+```{r}
+plotCounts(dds,
+           gene = "GAD2",
+           intgroup = "broad.cell.type") #intgroup: metadata colum we want to display
+```
+
+Here we see some discripancies as it seems that probably non-TE also express some amount of GAD2.
+
+
+```{r}
+plotCounts(dds, 
+           gene="DLX1", 
+           intgroup="cell.type")
+```
+
+
+

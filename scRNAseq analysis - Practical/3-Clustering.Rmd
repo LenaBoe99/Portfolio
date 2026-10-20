@@ -1,0 +1,217 @@
+---
+title: 'Protocol scRNA-seq - Part III: Clustering'
+author: "Lena Böhringer"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(presto)
+library(ggplot2)
+```
+
+### Load data
+
+```{r}
+ple5 <- readRDS("srt_02_ple5.rds")
+```
+
+
+```{r}
+DimPlot(ple5, label=F, reduction = "umap") #specify were data comes from (UMAP or PCA or tSNE)
+```
+
+(*Elbow plot already generated in part II*)
+
+# Clustering
+
+scRNA-seq data is very complex. To describe the heterogeneity found in the tissue in a readable way and to summarize the data, we can cluster the cells based on their gene expression. When we have our clusters we can determine what cell type the cluster probably represents by looking at marker genes. However, since there several parameters by which we can change the outcome of the clustering we can never say that the way we clustered is correct or true. It is an iterative approach and probably introduced some subjective bias.
+
+## Finding Neighbors
+
+Before we can cluster the cells, we need to find the nearest neighbors. "k" determines how many neighbor connections are "built".
+
+```{r}
+ple5 <- FindNeighbors(ple5, reduction = "pca", dims = 1:30, k.param = 20) 
+```
+
+## Find Clusters
+
+Now the algorithm tries to put the cells in a cluster in a way that maximizes internal connections between neighbors but minimizes external connections. With resolution we can change how many and big the clusters are.
+
+```{r}
+ple5 <- FindClusters(ple5, resolution = c(0.1))
+```
+
+The higher the resolution the more and smaller the clusters. We start with low resolution and increase later.
+
+
+## Visualize Clusters 
+
+```{r}
+ple5 <- SetIdent(ple5, value = "RNA_snn_res.0.1") 
+
+DimPlot(ple5, reduction = "umap", label = T) + NoLegend()  + ggtitle("Salamander Res 0.1, k = 20") 
+```
+
+
+### Decrease the k parameter
+
+**k = 10 **
+
+```{r}
+ple5 <- FindNeighbors(ple5, k.param = 10, reduction = "pca", dims = 1:30)
+```
+
+```{r}
+ple5 <- FindClusters(ple5, resolution = c(0.1))
+```
+
+```{r}
+DimPlot(ple5, group.by = "RNA_snn_res.0.1", label = T)  + NoLegend() + ggtitle("Salamander Res 0.1, k= 10")
+```
+
+
+**k = 8**
+
+```{r}
+ple5 <- FindNeighbors(ple5, k.param = 8, reduction = "pca", dims = 1:30)
+```
+
+```{r}
+ple5 <- FindClusters(ple5, resolution = c(0.1))
+```
+
+```{r}
+DimPlot(ple5, group.by = "RNA_snn_res.0.1", label = T) + NoLegend() + ggtitle("Salamander Res 0.1, k= 8")
+```
+
+The higher the k parameter the more connections between the cells will be made. With a high k parameter its harder to find small communities, but if k is too low we might over-cluster.
+
+I will continue with k = 8
+
+
+### compare different clustering resolutions
+
+We compare different clustering resolutions to find out which could be the best one. This is an iterative and subjective process, but need to be optimized for each  dataset.
+
+```{r}
+ple5 <- FindClusters(ple5, resolution = c(0.1, 0.3, 0.5, 1, 2, 3))
+```
+
+
+```{r}
+DimPlot(ple5, group.by = "RNA_snn_res.0.3", reduction = "umap", label = T)+ NoLegend() + ggtitle("Salamander Res 0.3")
+
+```
+
+```{r}
+DimPlot(ple5, group.by = "RNA_snn_res.0.5", reduction = "umap", label = T) + NoLegend() + ggtitle("Salamander Res 0.5")
+```
+
+```{r}
+DimPlot(ple5, group.by = "RNA_snn_res.3", reduction = "umap", label = T) + NoLegend() + ggtitle("Salamander Res 3")
+```
+
+With resolution = 3 we generate many very small clusters. This might lead to over-clustering, where we will have many clusters that only contain a small cell number.
+
+To see how many cells are in the clusters we use the table function. 
+
+```{r}
+table(ple5$RNA_snn_res.0.1)
+table(ple5$RNA_snn_res.0.3)
+table(ple5$RNA_snn_res.0.5)
+table(ple5$RNA_snn_res.3)
+```
+This shows that in a resolution of 3 the clusters contain only very few cells.
+
+In my opinion Res0.3 looks best as here we have a nice separation of the clusters, whereas in  res0.5 it seems like some parts are over-clustered.
+
+# Identifying and plotting marker genes
+
+```{r}
+ple5 <- SetIdent(ple5, value = "RNA_snn_res.0.3")
+```
+
+
+## Plotting known markers
+
+If we know marker genes of certain cell types we can look at them in a Featureplot and see, which clusters express these markers. This can give us a first idea which clusters might be which cell types. Additionally this can tell us whether our resolution is good or needs to be improved.
+
+### Glu neurons - Pallium cells
+
+```{r}
+FeaturePlot(ple5, features="SLC17A7", label=T)
+```
+
+
+### Glu neurons - Amygdala cells
+
+```{r}
+FeaturePlot(ple5, features="SLC17A6", label=T)
+```
+
+
+### GABA neurons
+
+```{r}
+FeaturePlot(ple5, features="GAD1", label=T)
+```
+
+```{r}
+FeaturePlot(ple5, features="GAD2", label=T)
+```
+We can already assume the different clusters for glutaminergic and GABAergic cells. By looking at more markers we can examine the clusters in more detail and determine their identity.
+
+## Find all marker genes distinguishing clusters
+
+The function FindAllMarkers finds genes that the different cluster express in an unbiased way (above we have a gene and look which clusters express this gene).
+
+```{r}
+ple5 <- SetIdent(ple5,value = "RNA_snn_res.0.3")
+ple5.markers <- FindAllMarkers(ple5, min.pct = 0.25) # the marker is expressed in at least 25% of the cells in the cluster
+```
+
+```{r}
+head(ple5.markers)
+```
+
+
+We can now for example look at cluster 0 and plot the top 5 genes expressed in this cluster.
+
+```{r}
+cluster0.markers <- ple5.markers %>%
+  dplyr::filter(cluster == 0) %>% 
+  dplyr::arrange(p_val) #order by p-value
+
+cluster0_top_5 <- cluster0.markers$gene[1:5]
+
+FeaturePlot(object = ple5, feature = cluster0_top_5, label = T)
+```
+
+
+When we want to compare two clusters that look similar, we can look at the markers that are most differentialy expressed by the following function:
+
+```{r}
+ple5 <- SetIdent(ple5,value = "RNA_snn_res.0.3")
+
+cluster0.17.markers <- FindMarkers(ple5, ident.1 = 0, ident.2 = 17, min.pct = 0.25) 
+
+head(cluster0.17.markers, n = 30)
+```
+
+We can take a more detailed look in a violin plot and see the distribution of the top 10 genes that are most different in the two clusters.
+
+```{r}
+cluster0.17.marker.names <- rownames(cluster0.17.markers)[1:10] 
+
+VlnPlot(ple5, features = cluster0.17.marker.names, idents=c(0,17))
+```
+
+```{r}
+saveRDS(ple5, "srt_03_ple5.rds")
+sessionInfo()
+```

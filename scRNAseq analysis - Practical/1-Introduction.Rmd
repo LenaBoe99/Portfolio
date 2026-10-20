@@ -1,0 +1,295 @@
+---
+title: 'Protocol scRNA-seq - Part I: Quality Control'
+author: "Lena Böhringer"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+Tissues in our body comprise many different cell types with different functions, which are reflected by their distinct gene expression. Many advances have been made to examine the transcriptome with RNA-sequencing in the last decades. However, when analyzing RNA in bulk we loose information about the different cell types in a sample, since the results represent the average expression over all cells. A high expression level could therefore mean that the gene is either expressed at low levels in many cells or at very high levels in only a few cells. With this method we can not dissect which cell types are present in our sample and how their transcriptomes differ from each other (Kulkarni et al., 2019, Jovic et al., 2022). 
+
+Single cell RNA sequencing (scRNA-seq) is a high throughput sequencing method that allows for transcriptomic analysis on a single cell level. Instead of analyzing the total RNA of a bulk of cells, scRNA-seq analyses the expression pattern of each cell in the sample individually. Thus, we can determine cell diversity within a tissue and learn more about the function of different cell types. The main steps during scRNA-seq are single cell isolation, cell lysis, reverse transcription, cDNA amplification and library preparation (Jovic et al., 2022). 
+
+The method that was used to generate the dataset that will be analyzed in this protocol was the 10X Genomics Chromium Next GEM Single Cell 3′ Kit (Woytch et al.). Here, after the generation of a single cell suspension, a single cell is captured together with a gel bead on a microfluidic device in a droplet. The droplet is generated when the cells and beads, that are in aqueous solution, are introduced to an oil phase. The droplet then contains one bead, a single cell and enzymes needed for the following reactions. To reduce the number of droplets that contain more than a single cell, cells are highly diluted on the microfluidic device, which also leads to the production of many empty droplets (Clark, 2022). 
+After formation of the droplets, cells are lysed. The poly-A tail of the mRNAs is then captured by the gel beads, which have many nucleotides bound on their surface with the following sequence parts:
+
+1) Starting sequence: here sequencing begins
+2) Barcode: This barcode is the same for each bead and identifies the cell
+3) UMI - unique molecular identifier: this sequence is specific for one nucleotide sequence on the bead and will help to identify the number of transcripts and reduce PCR bias
+4) poly(dT) tail: captures the poly(A) tail of mRNA
+
+After mRNA capture, cDNA is generated. Since the transcripts that we want to analyze are now labeled with a barcode corresponding to a single cell, we can generate a cDNA libary and sequence the transcripts of all cells together. 
+
+The dataset used here was generated from the salamander *Pleurodeles watl*, more precisely from the telecephanlon of the salamander.  The question asked in this paper was, whether the mammalian neocortex and the dorsal ventricular ridge (DVR) in reptiles have evolved from the same ancestor (homology) due to high similarity or via convergent evolution (separate evolutionary origins). Amphibians, such as *Pleurodeles watl* are a great for studying evolution of the vertebrate brain. Thus, they wanted to know whether neurons of the salamander are similar to neurons of the neocortex or the DVR on a transcriptomic level. To examine the different cell types present in the salamander telencephalon, scRNA-seq was used (Woytch et al.).
+
+
+# Quality Control
+
+Before the data can be analyzed we have to remove background, empty droplets, doublets to get better quality data.
+
+## Kneepoint plot 
+
+During sample preparation for scRNA-Seq, a small percentage of cells lyses contaminating the single cell suspension. Thus, each droplet harbors a small proportion of lysed material, which represents the background. Empty droplets that do not contain a single cell, can be detected by sequencing due to these contamination, or so-called ambient RNA. Since this ambient RNA is highly diluted, such beads only give a very low read number and can thus be removed from the data set. This can be achieved by using a Knee point plot. Here the barcodes (= different cells) are plotted on the x-axis in a ordered way - highest read number to lowest. The y-axis represents the cumulative sum of all reads. Thus, in an ideal scenario, we have a curve that steeply rises in the beginnging (cells that contribute a lot of reads) and than a "breaking point" at which the individual beads only contribute a low number of reads. As these are empty droplets, we can set a cut off at this "breaking point", which is also called Knee-Point. 
+
+
+### Loading necessary packages
+
+```{r}
+library(Matrix) 
+library(KneeArrower) 
+library(Seurat)
+```
+
+
+### Loading data
+
+First we need to load the data. 
+
+```{r}
+parent.dir <- "Pleurodeles_E5_2/"
+
+mat <- readMM(paste0(parent.dir, "matrix.mtx")) 
+barcodes <- read.csv(paste0(parent.dir, "barcodes.tsv"), header = F)[[1]] 
+genes <- read.csv(paste0(parent.dir, "features.tsv"), header = F)[[1]]
+# since these tables that do not have a column or row header, we need to state this by "header = F"
+```
+
+In the current matrix it is not yet given what rows and column represent. Therefore, we allocate barcodes to columns and genes to rows
+
+```{r}
+colnames(mat) <- barcodes
+rownames(mat) <- genes
+dim(mat)
+```
+
+What does this matrix look like? We subset the matrix and let R give us the first 5 rows and columns 
+
+```{r}
+mat[1:5, 1:5] 
+```
+
+The numbers in this matrix represent UMI counts (not reads) and correspond to how many transcripts of the particular gene were present in the cell. A dot represents 0. As we have a lot of zeros, since our data is very sparse, this saves storage. 
+
+How sparse our data is can be calculated by the following:
+
+```{r}
+sum(mat != 0) / (sum(mat == 0) + sum(mat != 0))
+```
+
+Only 0.8% of our entries is **NOT** zero
+
+## Creating the Knee Point Plot
+
+To create the Knee Point Plot we first have to calculate the cumulative sum that adds the UMIs per cell together. Since we probably have a lot of empty droplets that only contain a few reads/UMIs, we can sort them out by checking at which point the cells dont add information.
+
+```{r}
+umi.per.cell <- colSums(mat) #we sum up all UMIs in one cell. This is represented by the column in the matrix
+summary(umi.per.cell)
+```
+
+
+```{r}
+umi.per.cell <- sort(umi.per.cell, decreasing = T) #we sort from highest to lowest number of UMIs
+head(umi.per.cell) # gives us the first 5 entrys
+```
+
+
+```{r}
+cumulative.sum <- cumsum(umi.per.cell) 
+head(cumulative.sum)
+```
+
+
+```{r}
+plot(cumulative.sum, type = "l", 
+     xlab = "Cells", 
+     ylab = "cumulative sum of UMIs")  #type l = align plot (no dots)
+```
+
+We see that we have around 100 000 cells. Since most information is added more in the left of the plot, we focus on the first 10 000 cell by the following code: 
+
+```{r}
+plot(cumulative.sum[1:10000], type = "l", 
+     xlab = "Cells", 
+     ylab = "cumulative sum of UMIs")
+```
+
+Now we can see more easily were the kneepoint might be.
+
+### Finding the knee point
+
+```{r}
+knee <- findCutoff(
+  2000:5000, # narrow down the range on x axis
+  cumulative.sum[2000:5000], # narrow down the range on  y axis
+  method = "first", # first of the event it finds
+  frac.of.steepest.slope = 0.1 )# event where the slope changes, 0,1 is a rather conservative value; lower number more conservatives, higher number = earlier cut off
+
+ceiling(knee$x) #ceiling function rounds it up to know at what cell was cut off. Knee function gives us a decimal as this is the point it found the Knee.
+```
+
+
+```{r}
+plot(cumulative.sum[1:10000], type = "l") 
+abline(v = ceiling(knee$x), col = "red")
+```
+
+This calculation estimates the knee point to be at ~2722. This means will include the first 2722 cells.
+
+
+### Create a subset of the matrix
+
+Now we take a subset of the original matrix, in which most of the empty droplets should be removed.
+
+```{r}
+sub.mat <- mat [, names(cumulative.sum[1:ceiling(knee$x)])] 
+dim(sub.mat)
+```
+
+
+```{r}
+out.name <- "Pleurodeles_E5_2_filtered" 
+if(!dir.exists(out.name)){ #if the folder does not exists it creates a new folder with this name
+  dir.create(out.name)
+}
+writeMM(sub.mat, paste0(out.name, "/matrix.mtx"))
+
+```
+
+we again assign the cells (barcodes) to the genes (features)
+
+```{r}
+write(colnames(sub.mat), paste0(out.name, "/barcodes.tsv")) 
+write(rownames(sub.mat), paste0(out.name, "/features.tsv"))
+```
+
+
+
+## The Seurat Object
+
+Now we create the Seurat Object, with which we will work in the following steps. To further narrow down our data and "preprocess" it to increase data quality, we discard the genes that have not been measured in at least 3 different cells by the function *min.cells*. Additionally, if in a cell less than 200 genes were detected, this is not included as well by the function *min.features*. By this we sort out empty droplets that might have remained after Knee Point Plot analysis and decrease data size by discarding genes that are probably not important (since only 3 or less cells express them).
+
+```{r}
+ple5 <- CreateSeuratObject(
+  counts = sub.mat,
+  project = "Pleurodeles",
+  min.cells = 3, 
+  min.features = 200 #cell we're looking at has to have at least 200 genes
+)
+```
+
+
+```{r}
+ple5
+```
+
+
+
+## more QC metrics
+
+The process of scRNA-seq causes stress to the cells, which increases the expression of mitochondrial genes. This could influence the outcome of our analysis. Additionally, we further filter our dataset.
+
+```{r}
+mitochondrial_genes_salamander <- c("ND1", "ND4L","ND5","ND6","COX1","COX2","COX3","CYTB","ATP6")
+
+ple5[["percent_mito"]] <- PercentageFeatureSet( #seurat object, create new column-> function PercentageFeatureSet gives each row % of mito genes 
+  ple5,
+  features = mitochondrial_genes_salamander) # measure percentage of mitochondrial reads in each cell
+
+
+summary(ple5$percent_mito)
+```
+
+To get an overview of our data we look at three different Violin Plots:
+
+```{r}
+VlnPlot(ple5, features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+  ncol = 3, 
+  pt.size = 0.1)
+```
+
+**nFeature_RNA** shows how many different genes are expressed in one cell (not how many reads of one gene). Cells that contain very few different genes might still be empty droplets. Our dataset seems to still contain many "cells" with only few genes, since the violinplot shows many dots below ~1000
+
+**nCount_RNA** shows how many UMIs one cell contains. Here a high number suggests that the cell is a doublet. The violinplot shows that we have many cells that might be doublets since they have more UMIs than the average cell.
+
+**percent_mito** shows what percent of mitochondrial genes a cell expresses. If this is high, the cell might have been apoptotic and should be excluded. Here most of the cells express mito genes at a very low level. However, there are some outliers that have a high expression of mitochondrial genes.
+
+
+
+```{r}
+summary(ple5$nFeature_RNA)
+```
+
+```{r}
+summary(ple5$nCount_RNA)
+```
+
+```{r}
+summary(ple5$percent_mito)
+```
+
+```{r}
+quantile(ple5$nFeature_RNA, 0.01)
+```
+
+1% of the cells express less than 318 genes -> probably  empty droplets 
+
+```{r}
+quantile(ple5$nCount_RNA, 0.99)
+```
+
+99% of the cells have 32921 UMIs.
+
+```{r}
+quantile(ple5$percent_mito, 0.95)
+```
+
+Most cells (95%) only express few amount of mitochondrial genes.
+
+
+
+To remove outliers and further improve data quality we create a subset, in which potential doublets and apoptotic cells are removed.
+
+```{r}
+ple5 <- subset( ple5,
+subset = nFeature_RNA > quantile(ple5$nFeature_RNA, 0.01) & # filter out cells that have low number of genes
+  nCount_RNA < quantile(ple5$nCount_RNA, 0.99) & # filter out cells that have high amount of UMIs
+  percent_mito < quantile(ple5$percent_mito, 0.95) # filter out cells that have high amount of mito genes
+)
+
+ple5
+```
+
+
+```{r}
+VlnPlot(ple5, features = c(
+  "nFeature_RNA", "nCount_RNA", "percent_mito"
+  ), ncol = 3, pt.size = 0.1)
+```
+
+Now we see that we have reduced the number of cells with low numbers of genes (empty droplets), cells with a very high number of counts (potential doublets) and cells that are apoptotic.
+
+
+## Saving the Seurat Object for later use
+
+```{r}
+saveRDS(ple5, "srt_01_ple5.rds")
+```
+
+```{r}
+sessionInfo()
+```
+
+### Literature
+
+Clark, S. (2022). Single cell RNA-seq: An introductory overview and tools for getting started - 10x Genomics. 10x Genomics. https://www.10xgenomics.com/blog/single-cell-rna-seq-an-introductory-overview-and-tools-for-getting-started# 
+
+Jovic, D., Liang, X., Zeng, H., Lin, L., Xu, F. & Luo, Y. (2022). Single‐cell RNA sequencing technologies and applications: A brief overview. Clinical And Translational Medicine, 12(3). https://doi.org/10.1002/ctm2.694 
+
+Kulkarni, A., Anderson, A. G., Merullo, D. P. & Konopka, G. (2019). Beyond bulk: a review of single cell transcriptomics methodologies and applications. Current Opinion in Biotechnology, 58, 129–136. https://doi.org/10.1016/j.copbio.2019.03.001
+
+Woych, J., Gurrola, A. O., Deryckere, A., Jaeger, E. C., Gumnit, E., Merello, G., Gu, J., Araus, A. J., Leigh, N. D., Yun, M. H., Simon, A. & Tosches, M. A. (2022). Cell-type profiling in salamanders identifies innovations in vertebrate forebrain evolution. Science, 377(6610). https://doi.org/10.1126/science.abp9186
+
+

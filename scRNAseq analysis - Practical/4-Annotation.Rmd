@@ -1,0 +1,256 @@
+---
+title: 'Protocol scRNAseq - Part IV: Subclustering and Annotation'
+author: "Lena Böhringer"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(clustree)
+```
+
+
+# Broad annotation of cell clusters
+
+Now we have grouped our RNA-seq data into (mostly) well separated clusters. For the allocation of cell types, we have to look at the gene expression of the individual clusters.
+
+```{r}
+ple5 <- readRDS("srt_03_ple5.rds")
+```
+
+
+```{r}
+DimPlot(ple5, label = T)
+```
+
+
+## Generate violin plot of marker genes 
+
+First we can look at the markers used by the original paper (Woych et al. 2022) to distinguish the clusters. This Violin plot gives a good overview of which gene is expressed in which cluster.
+
+```{r}
+ple5 <- SetIdent(ple5, value="RNA_snn_res.0.3")
+
+Major_Features <- c("SNAP25", "SYT1", "RBFOX3", "FOXG1", "SLC17A7", "GAD1", "SLC17A6", "SOX4", "SOX9", "SOX2", "GFAP", "PDGFRA", "NINJ2", "COL1A2", "PRSS56", "C1QB", "LCP1") 
+
+VlnPlot(ple5, features = Major_Features, flip = F, stack = T) #stack puts all genes together
+
+```
+
+With the help of the Protein Atlas, we can figure out which genes are expressed in which cell types:
+
+- Snap25, Syt1, RBFOX3: differentiated neurons, pan-neuronal markers
+- FOXG1: neuronal + oligo cells
+- SLC17A7: Glutaminergic cells (no SCL17A6) in Telencephalon
+- GAD1: GABAnergic cells in Telencephalon
+- SLC17A6: non-Telencephalon cells
+- SOX4: precursor / immature neurons
+- SOX9: ependymoglia (Woytch et al.)
+- SOX2: precursor ? 
+- GFAP: Astrocytes, Gliacells -> OPC
+- PDGFRA: oligodendrocyte precursor
+- NINJ2: oligodendrocyte
+- COL1A2: Vascular cells
+- PRSS56: Gliacells
+- C1QB: immune cells (macro, kupfer)
+- LCP1: immune cells (macro, mono)
+
+
+We can take a more detailed look at expression of neuronal markers in a seperate violin plot
+
+```{r}
+VlnPlot(ple5, features = c("SNAP25", "SYT1", "RBFOX3"))
+```
+
+Clusters that express neuronal marker are: 0,1,3,4,5,6,7,8,9,12,13,14,17
+
+
+Glutaminergic neurons express NEUROD2 and SLC17A7
+
+```{r}
+VlnPlot(ple5, features = c("NEUROD2", "SLC17A7"))
+```
+
+Clusters that express Glutaminergic markers are: 3,4,5,6,9
+
+
+Further markers that GABAerig neurons express are GAD2 DLX5 (Woytch et al.)
+
+```{r}
+FeaturePlot(ple5, features = c("GAD2", "DLX5"), label = T)
+
+VlnPlot(ple5, features = c("GAD1", "GAD2", "DLX5"))
+```
+
+Clusters that express GABAergic markers are: 0,1,7,8,12,13,17
+
+Thus we can get a first idea which cluster represents which cell type by looking at the marker genes expressed by the clusters.
+
+0: GAD1, GAD2, DLX5 + neuronal markers-> TEGABA    
+1: GAD1, GAD2, DLX5 + neuronal markers-> TEGABA              
+2: SOX9, SOX2, GFAP, NINJ2 + no neuronal markers -> ependymoglia cells
+3: SLC17A7 + neuronal markers -> TEGLUTA          
+4: SLC17A7, SLC17A6 + neuronal markers-> non-TE GLUTA            
+5: SLC17A7, SLC17A6 (only minimally) + neuronal markers -> TEGLUTA    
+6: SLC17A7 + neuronal markers -> TEGLUTA        
+7: GAD1, GAD2, DLX5 + neuronal markers-> TEGABA             
+8: GAD1, GAD2, DLX5 + neuronal markers-> TEGABA                     
+9: SLC17A7 + neuronal markers-> TEGLUTA   
+10: COL1A2 -> Vascular
+11: C1QB, LCP1 -> immune cell type 1
+12: GAD1, GAD2, DLX5 + neuronal markers-> TEGABA    
+13: GAD1, GAD2 + neuronal markers      -> TEGABA    
+14: SOX2, GFAP, PDGFRA, NINJ2 (+ lower neuronal marker expr.)-> Oligo precursor
+15: PRSS56 -> ??
+16: LCP1 -> immune cell type 2
+17: GAD1, GAD2, DLX5 + neuronal markers (+ GFAP?) -> TEGABA    
+
+For clusters 15 its not easy to tell, which cell type it is. Thus we can look again at the TOP 5 markers of the clusters and look at those genes in the protein atlas.
+
+
+```{r, results='hide'}
+ple5 <- SetIdent(ple5,value = "RNA_snn_res.0.3")
+ple5.markers <- FindAllMarkers(ple5, min.pct = 0.25)
+```
+
+Now we can look at the top 5 marker genes from  cluster 15
+
+```{r}
+cluster15.markers <- ple5.markers %>%
+  dplyr::filter(cluster == 15) %>% 
+  dplyr::arrange(p_val) 
+
+cluster15_top_5 <- cluster15.markers$gene[1:5]
+
+VlnPlot(object = ple5, feature = cluster15_top_5)
+
+```
+
+PLP1 -> oligodendrocyte
+FOXD3 -> Schwann cell
+EMP1 -> Endothelial cells ? 
+CDH19 -> Schwann cells, Oligodendrocyte
+SOX10 -> Schwann cells, Oligodendrocyte
+
+I will account cluster 15 as oligodendrocytes 
+
+
+
+## Rename Clusters
+
+```{r}
+ple5 <- SetIdent(ple5, value="RNA_snn_res.0.3")
+
+ple5 <- RenameIdents(ple5,
+                     "0" = "TEGABA",
+                     "1" = "TEGABA",
+                     "2" = "EG",
+                     "3" = "TEGLU",
+                     "4" = "non-TE",
+                     "5" = "TEGLU",
+                     "6" = "TEGLU",
+                     "7" = "TEGABA",
+                     "8" = "TEGABA",
+                     "9" = "TEGLU",
+                     "10" = "Vascular",
+                     "11" = "Immune.1",
+                     "12" = "TEGABA",
+                     "13" = "TEGABA",
+                     "14" = "OPC",
+                     "15" = "Oligo",
+                     "16" = "Immune.2",
+                     "17" = "TEGABA") 
+```
+
+```{r}
+DimPlot(ple5, label = T)
+```
+
+Next we change the metadata in ple5 dataset to add a column which shows the annotated clusters that we assigned
+
+```{r}
+ple5$broad.cell.types <- as.character(Idents(ple5)) #rename identities (= Clusters, save them as characters, bc sometimes R converts strings to numbers)
+head(ple5[[]])
+Idents(ple5) # shows the ident we assigned for each cell
+```
+
+
+
+## Visualize Data
+
+### Number of cells  in each identity (cells type)
+
+```{r}
+data <- as.data.frame(table(ple5$broad.cell.types))
+colnames(data) <- c("cell.type", "count")
+
+ncells <- ggplot(data, aes(x = cell.type, y = count, fill = cell.type)) +
+  geom_col() +
+  theme_classic() +
+  geom_text(aes(label = count),
+            position=position_dodge(width = 0.9),
+            vjust = -0.25) +
+  ggtitle("Cells per cell type") +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ncells
+
+```
+
+### Marker gene expression in the cell types
+
+To get a figure that summerizes the expression of the marker genes in a cell type and also what percentage of the cells express the marker gene in the cluster, we can create the following dotplot
+```{r}
+Major_Features
+
+ple5 <- SetIdent(ple5, value = "broad.cell.types")
+
+DotPlot(ple5, features = Major_Features)
+```
+
+To make it a bit more organized and oriented on the original paper (Woytch et al), we can change the order of the cell types on the y-axis.
+
+```{r}
+ple5 <- SetIdent(ple5, value = "broad.cell.types")
+Idents(ple5) <- factor(Idents(ple5),
+                       levels = c("Immune.2", "Immune.1", "Vascular", "OPC", "Oligo", "EG", "non-TE", "TEGABA", "TEGLU")) 
+```
+
+
+```{r}
+DotPlot(ple5, features = Major_Features) +
+  theme(axis.text.x = element_text(angle = 45, 
+                                   vjust = 0.9, 
+                                   hjust = 0.9))
+ 
+```
+
+### Heat map of marker gene expression in the cell types
+
+we can also look at the marker gene expression in a heatmap. Here we can see the individual expression levels of the marker genes from each cell in a cluster (narrow, vertical bars. This also shows the heterogeinity of some clusters and that some genes correlate negatively with certain clusters. For instance SNAP24 and SYT1 correlate with Oligodendrocytes, Vascular and immune cells, which makes sense since these genes are neuronal markers.
+
+
+```{r}
+ple5 <- SetIdent(ple5, value = "broad.cell.types")
+
+DoHeatmap(subset(ple5, downsample = 50), 
+          features = Major_Features,
+          size = 3)
+```
+
+As we could see in the heatplot, we have some heterogeinity in the clusters. Also bigger clusters such as TEGABA or TEGLU cluster seem to have be divided in sub-groups. To investigate this further, we could subset these clusters and investigate the marker genes these cluster differentially express and thus find sub cell types. Here it is important that we run PCA again, since the PCA we did before looked at the differences of all cells. If we would look now at the expression of the subset using the old PCA, we could hardly see the differences in the subset as we compared the cells against all, non-neuronal cells. Running PCA again, we only consider neuronal cells, thus differences in the subset can be detected better.
+
+
+```{r}
+saveRDS(ple5, "srt_04_ple5.rds")
+```
+
+
+```{r}
+sessionInfo()
+```

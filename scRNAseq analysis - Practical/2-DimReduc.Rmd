@@ -1,0 +1,319 @@
+---
+title: 'Protocol scRNA-seq - Part II: Pre-processing and Dimensionality Reduction'
+author: "Lena Böhringer"
+output:
+  html_document:
+    df_print: paged
+---
+# Normalizing, Variable Features and Scaling 
+
+### Loading required packages
+
+```{r}
+library(Seurat)
+```
+
+
+### Load dataset 
+
+```{r}
+ple5 <- readRDS("srt_01_ple5.rds")
+
+ple5
+```
+
+
+## Normalizing
+
+In order to compare our cells and find cell types, we have to normalize the expression of our data. Some cells might have an overall higher/lower gene expression compared to others or have more/less reads due to technical artifacts. Additionally, many statistical methods require normalized data. To make the cells more comparable, gene expression is normalized via logarithmic transformation.
+
+```{r}
+ple5 <- NormalizeData(
+  ple5, normalization.method = "LogNormalize", 
+  scale.factor = 10000 # multiplies all factors by 10 000 and log transform it
+)
+
+ple5
+```
+
+## Finding variable features
+
+Some genes are expressed in all (or many) cells, such as house keeping genes, cell cycle genes etc. Other might only be expressed by certain cell with a certain function. Since we are interested in the biological differences between the cells, in order to later cluster the cells and determine cell types, we want to look at those genes that have a variable expression across different cells. Therefore, by removing genes with low variability, we do not only sort out uninteresting genes but also reduce the complexity of our dataset, making downstream analysis faster.
+
+
+```{r}
+ple5 <- FindVariableFeatures(
+  ple5, 
+  selection.method = "vst", 
+  nfeatures = 2000) #here we can experiment if we choose a diff set of variable features; cut off the most 2000 most variable genes
+```
+
+
+```{r}
+plt <- VariableFeaturePlot(ple5) 
+plt.labels <- LabelPoints(plot = plt,
+                          points = head(VariableFeatures(ple5), 10), 
+                          repel = TRUE, 
+                          xnudge = 0, 
+                          ynudge = 0
+                          )
+
+plt.labels
+
+```
+
+Now we only look at the most variable 2000 genes. More than 11 000 genes are now excluded which dramatically reduces out dataset. Since scaling is computationally intensive, we do this step beforehand.
+
+
+## Scaling
+
+Some genes might be expressed more highly, others not so much. To weight the genes equally, we set the mean expression to 0 and the variance to one, which is called scaling.
+
+```{r}
+ple5 <- ScaleData(ple5)
+```
+
+
+
+
+# Dimensionality Reduction
+
+In our dataset each cell can be seen as a sample/data point, which contains information about the expression of many different genes = features. These features can be seen as dimensions of one cell. For example, when we compare the expression of 2 genes we can plot gene 1 on the x- and gene 2 on the y-axis. In this two-dimensional space our cells can then be plotted depending on their expression of gene 1 and 2. In our single-cell data however, we measure thousands of genes, which means we have thus many dimensions. By the previous quality control, we reduced the number of samples and the number of genes. However, when we look at our data set now, we still have 13103 features = dimensions.
+
+To reduce dimensionality we can in general use two procedures: linear and non-linar dimension reduction. The main difference here is that in linear dimension reduction the axes still correlate to the individual genes and we can interpret expression on the principle component axis itself. In non-linear dimension reduction the axes themselves are not interpretable anymore. Here cells that have similar expression patters are clustered together, however we cannot state that when two clusters are close together these are overall more similar to each other than a cluster that is further away. This means that local distances are well preserved, however when looking at the clusters globally we should not jump to conclusions since global distance are not well preserved.
+
+
+## Linear Dimensionality Reduction 
+
+
+### Principle Component Analysis (PCA)
+
+
+```{r}
+ple5 <- RunPCA(ple5, features = VariableFeatures(ple5),
+              npcs = 100) # number of PCs we want to calculate 
+ple5
+```
+
+We get the first 5 PCs and the genes that correlate negatively or positively with the OC. 
+
+To visualize which genes correlate negatively or positively with a corresponding PC we can use the following function:
+
+```{r}
+VizDimLoadings(ple5, dims = 1:2, reduction = "pca")
+```
+
+This visualized the genes. In order to viualize the cells on the PC we can use the function DimPlot.
+
+```{r}
+DimPlot(ple5, reduction = "pca", dims = 1:2) # now we have to chose a pair of two dimension; if you want to compare two dimensions that are not next to each other use c(2, 4)
+```
+
+We can see here that we have high variation on both axis
+
+```{r}
+DimPlot(ple5, reduction = "pca", dims = 2:3) 
+```
+
+When looking at PC2 and PC3 we still have a lot of variation but we can note that PC3 has slightly lower variance compared to PC2 when looking at the scale.
+
+
+```{r}
+DimPlot(ple5, reduction = "pca", dims = c(4,14)) 
+```
+
+
+```{r}
+DimPlot(ple5, reduction = "pca", dims = c(50,100)) 
+```
+
+Looking at the different PCs we can nicely see that  "higher" PCs don't add much variance, as compared to the "lower" PCs. This will later be important when we decide, which PCs to include
+
+
+We can now look at the distribution of some genes with a feature plot. 
+
+```{r}
+FeaturePlot(ple5, 
+            c("ATP1A2", "SNAP25", "S100A11", "NTRK2"), 
+            reduction = "pca", 
+            dims = 1:2)
+```
+
+As seen in the plot above, ATP1A2 correlates negativeley with PC1, while SNAP25 correlated positively with PC1.
+For PC2, S100A11 correlated positively and NTRK2 correlates negatively.
+
+
+Above we could already see that the higher dimensions did not add much variance info. Thus we don't need to include all PCs in the following steps. To find the cutoff we can use an Elbow plot that shows which PC adds how much variance information.
+
+```{r}
+ElbowPlot(ple5, ndims = 100)
+```
+
+We see that the first ~15-20 PCs add most variance. Since its better to include more PCs than too less, we set the cutoff at 30.
+
+
+## Non-Linear dimensionality reduction
+
+### t-distributed stochastic neighbor embedding (t-SNE)
+
+To see how the dimensions included in the t-SNE analysis affect the outcome, we test different numbers of dimension.
+
+**use 5 dimensions **
+
+```{r}
+ple5 <- RunTSNE(ple5, dims = 1:5)
+```
+
+```{r}
+DimPlot(ple5, reduction = "tsne")
+```
+
+
+**use 10 dimensions **
+
+```{r}
+ple5 <- RunTSNE(ple5, dims = 1:10)
+```
+
+```{r}
+DimPlot(ple5, reduction = "tsne")
+```
+
+
+**use 50 dimensions**
+
+```{r}
+ple5 <- RunTSNE(ple5, dims = 1:50)
+```
+
+```{r}
+DimPlot(ple5, reduction = "tsne")
+```
+
+
+**use 100 dimensions**
+
+```{r}
+ple5 <- RunTSNE(ple5, dims = 1:100)
+```
+
+```{r}
+DimPlot(ple5, reduction = "tsne")
+```
+
+
+**use 30 dimensions **
+
+```{r}
+ple5 <- RunTSNE(ple5, dims = 1:30)
+```
+
+```{r}
+DimPlot(ple5, reduction = "tsne")
+```
+
+
+Testing the generation of tSNE using different dimension parameters we can see that including less dimensions influence the results more than including more dimensions. When we compare the tSNE plot with 10 dimension it is quite  different from the plot with 30 dims. The plot were we used 50 or 100 dims however, does not differ much from the plot, where we used 30 dims. 
+
+
+Now we can look again at the genes and see how they are distributed and whether the generated clusters are really different from each other:
+
+```{r}
+FeaturePlot(ple5, c("ATP1A2", "SNAP25"), reduction = "tsne", pt.size = 0.1)
+``` 
+
+
+## Uniform manifold approximation and projection (UMAP) 
+
+**use 5 dimensions **
+
+```{r}
+ple5 <- RunUMAP(ple5, dims = 1:5)
+```
+
+```{r}
+DimPlot(ple5, reduction = "umap")
+```
+
+
+**use 10 dimensions  **
+
+```{r}
+ple5 <- RunUMAP(ple5, dims = 1:10)
+```
+
+```{r}
+DimPlot(ple5, reduction = "umap")
+
+```
+
+
+**use 50 dimensions **
+
+```{r}
+ple5 <- RunUMAP(ple5, dims = 1:50)
+```
+
+```{r}
+DimPlot(ple5, reduction = "umap")
+```
+
+
+**use 100 dimensions **
+
+```{r}
+ple5 <- RunUMAP(ple5, dims = 1:100)
+```
+
+```{r}
+DimPlot(ple5, reduction = "umap")
+```
+
+
+**use 30 dimensions **
+
+```{r}
+ple5 <- RunUMAP(ple5, dims = 1:30)
+```
+
+```{r}
+DimPlot(ple5, reduction = "umap")
+```
+
+Again we see that when we choose different dimension the UMAP looks different. However when we include less dimension the different is greater than when we include more. When looking at the plots, where we used 100, 50 and 30 dimension, its important to see that the plots might look different, however when looking more closely at the clusters they look very similar but are in different positions. In the plots where we only used 5 or 10 dimensions we can see that we have less clusters, because less variance information was included.
+
+
+Looking at the feature plot, we see that the clusters are different in the genes they express.
+
+```{r}
+FeaturePlot(ple5, c("ATP1A2", "SNAP25"), reduction = "umap", pt.size = 0.1) 
+```
+
+# Saving Seurat Object for later use
+
+```{r}
+saveRDS(ple5, "srt_02_ple5.rds")
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
