@@ -2,7 +2,7 @@
 This repository collects selected bioinformatics projects and analysis from my research and training. 
 
 ## Contents 
-- **RNA-seq analysis:** bulk RNAseq workflow, part of my Master Thesis
+- **RNA-seq analysis:** bulk RNAseq workflow, part of my Master Thesis * [link] (https://lenaboe99.github.io/Portfolio/Bulk RNAseq analysis - Master Thesis/bulkRNAseq_CD8+Tcells_anti-CD47.html)
 - **single cell RNAseq:** analysis of a public scRNAseq dataset, practical of my master programm
 
 ## Further Previous and Ongoing Experience
