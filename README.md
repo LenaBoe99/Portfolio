@@ -9,7 +9,7 @@ This repository collects selected bioinformatics projects and analysis from my r
 
 During a lab rotation in Prof. Benedict Brors Applied Bioinformatics Group at DKFZ, I worked with Xenium spatial transcriptomics data from brain metastatis. I analyzed this single-cell resolution data using R, adapting the workflow from the Seurat vignettes. The code for this project remained at DKFZ and is therefore not included in this repository. 
 
-I am currently analyzing bulk RNAseq data  from patient derived organoids. For this project, I use the pseudo-aligner kallisto for transcript quantification and R dor downstream analysis. This has given me more hands-on experience with command-line tools and was in my opinion more convenient than using Galaxy, as I did before.
+I am currently working as research associate at the [MOLIT Institute for personalized medicine](https://www.molit.eu). Here I am analyzing bulk RNAseq data from colorectal cancer patient derived organoids. For this project, I use the pseudo-aligner kallisto for transcript quantification and R for downstream analysis. This has given me more hands-on experience with command-line tools and was in my opinion more convenient than using Galaxy, as I did before.
 
 I am curious about exploring further dataset and continue to develop my analytical and bioinformatic skill.
 
