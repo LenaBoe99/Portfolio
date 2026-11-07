@@ -1,7 +1,8 @@
 ---
 title: "Systemic effect of CD47 inhibition on CD8+ T cells"
 output:
-  html_document: default
+  html_document: 
+    keep_md: true
   pdf_document: default
 date: "2025-07-04"
 ---
@@ -283,7 +284,7 @@ mmus_anno <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "wiki
 pc1_loadings_df_description <- pc1_loadings_df %>%
   left_join(mmus_anno, by = c("gene" = "ensembl_gene_id"))
 
-print(pc1_loadings_df_description$gene)
+print(pc1_loadings_df_description$external_gene_name)
 
 ```
 #### Top Loadings: 
