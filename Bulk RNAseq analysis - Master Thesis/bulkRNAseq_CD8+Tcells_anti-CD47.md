@@ -259,51 +259,18 @@ An unusually high percent of the variance is explained by PC1. Since we dont kno
 To investigate where variance comes from we can plot the PCA results in combination with our metadata.
 
 
-``` r
-pca_res_df <- pca_res$x[,1:3] %>%
-  as_tibble() %>%
-  add_column(sample = rownames(metadata),
-             treatment = metadata$condition,
-             gender = metadata$gender,
-             batch = metadata$batch
-             )
-
-pca_tidy <- pivot_longer(pca_res_df,
-                         cols = PC1:PC3, 
-                          names_to = "PC", 
-                          values_to = "loadings")
-```
 
 
 
-``` r
-ggplot(pca_tidy) +
-  aes(x = sample, y = loadings, fill = treatment) + #exchange fill by other parameters (gender, batch)
-  geom_bar(stat="identity") +
-  facet_wrap(~PC) +
-  labs(title="PCA 'small multiples' plot",
-       caption=paste0("produced on ", Sys.time())) +
-  theme_bw() +
-  coord_flip()
-```
 
-![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-9-1.png)<!-- -->
 
-![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-10-1.png)<!-- -->
 
-![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-11-1.png)<!-- -->
 
-PC1 is explained by the treatment, while PC2 is explained by the gender. Batch (RNA isolation) might have had a very small effect. 
 
-We can plot other PCs to check:
 
-``` r
-plotPCA(vsd, intgroup = "batch", pcsToUse = 2:3)
-```
 
-![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-12-1.png)<!-- -->
 
-Similar visualization of PC1/PC2 wiht plotPCA from DESeq2 package:
+Visualization of PC1/PC2 wiht plotPCA from DESeq2 package:
 
 
 ``` r
@@ -364,23 +331,19 @@ mmus_anno <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "wiki
 pc1_loadings_df_description <- pc1_loadings_df %>%
   left_join(mmus_anno, by = c("gene" = "ensembl_gene_id"))
 
-print(pc1_loadings_df_description$gene)
+print(pc1_loadings_df_description$external_gene_name)
 ```
 
 ```
-##  [1] "ENSMUSG00000008843" "ENSMUSG00000091694" "ENSMUSG00000022099"
-##  [4] "ENSMUSG00000121605" "ENSMUSG00000028825" "ENSMUSG00000056656"
-##  [7] "ENSMUSG00000021118" "ENSMUSG00000042066" "ENSMUSG00000121431"
-## [10] "ENSMUSG00000027562" "ENSMUSG00000028332" "ENSMUSG00000068417"
-## [13] "ENSMUSG00000023926" "ENSMUSG00000051839" "ENSMUSG00000034127"
-## [16] "ENSMUSG00000034059" "ENSMUSG00000037872" "ENSMUSG00000020490"
-## [19] "ENSMUSG00000050157" "ENSMUSG00000073940"
+##  [1] "Cldn13"  "Apol11b" "Dmtn"    "Ahsp"    "Rhd"     "Apol8"   "Plek2"  
+##  [8] "Tmcc2"   "Gm62754" "Car2"    "Hemgn"   "Pnp2"    "Rhag"    "Gypa"   
+## [15] "Tspan8"  "Ypel4"   "Ackr1"   "Btnl10"  "Gm867"   "Hbb-bt"
 ```
 #### Top Loadings: 
 
 **Cldn13:** stress induced erythropoiesis https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0012667  
 **Apol11b:** lipid transport.  
-**Dmtn** structural role in erythrocytes, by stabilizing and attaching the spectrin/actin cytoskeleton to the erythrocyte membrane in a phosphorylation-dependent manner. https://www.ncbi.nlm.nih.gov/gene/2039. 
+**Dmtn** structural role in erythrocytes, by stabilizing and attaching the spectrin/actin cytoskeleton to the erythrocyte membrane in a phosphorylation-dependent manner. https://www.ncbi.nlm.nih.gov/gene/2039.   
 **Ahsp** (alpha hemoglobin stabilizing protein) -> Acts as a chaperone to prevent the harmful aggregation of alpha-hemoglobin during normal *erythroid cell development* Specifically protects free alpha-hemoglobin from precipitation  
 **Rhd:**  Rh blood group, D antigen  
 **Apol8:** apolipoprotein8, lipid transport  
@@ -428,6 +391,7 @@ print(marker_heatmap)
 ```
 
 ![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-16-1.png)<!-- -->
+
 Plotting defined erythropoeisis-associated markers clearly shows that the CD47-treated samples are biased towards erythropoisis. This skews the expression of Cd8+ T cell associated genes that should not be different between the conditions. This suggests a contamination of erythroid genes that dominate detecable changes in CD8+ Tcells making it hard/impossible to determine expression coming from CD8+ T cells. Nevertheless, I will continue with the standard differential expression workflow and perform downstream pathway analysis.
 
 
@@ -474,6 +438,7 @@ plotMA(res, ylim = c(-6, 6), alpha = 0.05)
 ```
 
 ![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-19-1.png)<!-- -->
+
 Blue dots indicate genes below the p-adj value of 0.05. We see many signigicant genes that are skewed to a positive logFC.
 
 ## Histogram 
@@ -485,9 +450,8 @@ hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
 ```
 
 ![](bulkRNAseq_CD8+Tcells_anti-CD47_files/figure-html/unnamed-chunk-20-1.png)<!-- -->
+
 This again shows the untypically high amount of DEGs
-
-
 
 
 # Visualization
@@ -621,7 +585,7 @@ results showed that CCNE1 expression level was negatively correlated with the in
 **Trbj1-3**: Predicted to be involved in adaptive immune response. Predicted to be located in plasma membrane. Predicted to be part of T cell receptor complex (https://www.ncbi.nlm.nih.gov/gene/28633)  
 
 
-**We do see interesting genes in our DEG analysis. However since our anti-CD47 treated group is greatly contaminated by Nucleated Red Blood Cells **
+**We do see interesting genes in our DEG analysis. However since our anti-CD47 treated group is greatly contaminated by Nucleated Red Blood Cells Im not sure whether this stems from true biological signal or is due to the excess of  of erythrocyte genes that skew the apparent differences in expression.**
 
 # Pathway analysis
 
