@@ -1,0 +1,488 @@
+---
+title: "TLS cluster"
+author: "Lena Böhringer"
+date: "2025-03-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(Seurat)
+library(future)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(plotly)
+library(gtools)
+
+#plan("cluster", workers = 5)
+options(future.globals.maxSize = Inf)
+
+data_dir <- "/omics/groups/OE0436/data/lena/output/"
+raw_dir <- "/omics/groups/OE0436/data/karina/BrM_Xenium/Jonathans_files"
+fig_dir <- "/omics/groups/OE0436/data/lena/output/figures/"
+
+infile <- file.path(data_dir, "3_xenium_BroadCellTypes.RDS")
+xenium <- readRDS(infile)
+xenium
+
+infile <- file.path(raw_dir, "BrM_TLS_cellbarcodes.csv") 
+tls_region <- read.csv(infile)
+
+```
+
+# subset to only tls containing cells
+
+```{r}
+TLScells <-  subset(xenium_BroadCellTypes, subset = tls.status == "1")
+unique(Idents(TLScells))
+ImageDimPlot(TLScells)
+
+TLScells <- SetIdent(TLSregions, value = "tls_region")
+ImageDimPlot(TLScells)
+```
+
+# add tls cluster info as meta data
+
+```{r}
+tls_regionDF <- tls_region %>% 
+  select(cell_barcode, TLS_nb)
+  
+tls_cells <- data.frame(cell_barcode = colnames(TLScells))
+
+new_df <- left_join(tls_cells, tls_regionDF, by = "cell_barcode")
+new_df[is.na(new_df)] <- 0
+
+tls_region <- new_df["TLS_nb"]
+rownames(tls_region) <- make.unique(as.character(new_df$cell_barcode))
+
+TLScells <- AddMetaData(object = TLScells, metadata = tls_region, col.name = "tls_region")
+
+TLScells$tls_region <- factor(TLScells$tls_region, 
+                               levels = mixedsort(unique(TLScells$tls_region)))#save as factor and use mixedsort so that the order is TLS1, TLS2... instead of TLS1, TLS10...
+
+plot <- ImageDimPlot(TLScells, size = 0.3)
+
+ggsave(plot, file = paste0(fig_dir,"6_TLScluster_celltypes", ".png"), width = 12, height=12)
+
+saveRDS(TLScells, file = file.path(data_dir, "6_TLSregions.RDS"))
+```
+!!!ehfpckdp-1 has both TLS4 and TLS5 annotation
+!!!kpgjojen-1 has both TLS5 and TLS10 annotation
+
+```{r}
+TLScells <- SetIdent(TLScells, value = "tls_region")
+unique(Idents(TLScells))
+
+# Extract metadata from Seurat object
+metadata <- TLScells@meta.data 
+
+# Count the number of cells for each cell type in each TLS cluster
+cell_counts <- metadata %>%
+  group_by(tls.cluster, annotationRes0.3) %>%
+  summarise(count = n(), .groups = 'drop')
+
+# Calculate proportions
+cell_counts <- cell_counts %>%
+  group_by(tls.cluster) %>%
+  mutate(proportion = count / sum(count))
+
+# Plot
+plot <- ggplot(cell_counts, aes(x = tls.cluster, y = proportion, fill = annotationRes0.3)) +
+  geom_bar(stat = "identity") +
+  labs(x = "TLS Cluster", y = "Proportion", title = "Cell Type Proportion in TLS regions") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(vjust = 10, size = 10)) +
+  scale_fill_brewer(palette = "Set3")
+ggsave(plot, file = paste0(fig_dir,"6_CelltypesInTLSregion", ".png"), width = 10, height=8) 
+
+```
+
+
+# Analyze TLS clusters 
+
+```{r}
+#check whether meta data was stored correctly
+table(TLScells@meta.data$tls.cluster)
+
+#convert TLS cluster information from character into a factor
+TLScells$tls.cluster <- factor(TLScells$tls.cluster, 
+                               levels = mixedsort(unique(TLScells$tls.cluster)))
+#set tls.cluster as active Ident (we also have the cell types)
+Idents(TLScells) <- TLScells$tls.cluster
+levels(TLScells)
+```
+
+
+
+```{r}
+library(plotly)
+centroid_coords <- as.data.frame(TLSclusters@images$X0019329.R3.1658.2022.20240628.095421$centroids@coords)
+
+p <- ggplot(centroid_coords, aes(x = x, y = y, color = TLScells@meta.data[["annotationRes0.3"]])) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  theme_minimal()
+
+p <- ggplot(centroid_coords, aes(x = x, y = y, color = TLScells@meta.data[["tls.cluster"]])) +
+  geom_point(alpha = 0.5, size = 0.5) +
+  theme_minimal()
+
+ggplotly(p)
+```
+
+```{r}
+n_clusters <- length(unique(TLScells@meta.data[["annotationRes0.3"]]))
+my_colors <- DiscretePalette(n_clusters, palette = "polychrome")
+
+# Same as before, just add colors
+centroid_coords <- as.data.frame(TLSclusters@images$X0019329.R3.1658.2022.20240628.095421$centroids@coords)
+centroid_coords$cluster <- as.factor(TLScells@meta.data[["annotationRes0.3"]])
+
+p <- ggplot(centroid_coords, aes(x = x, y = y, color = cluster)) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  scale_color_manual(values = my_colors) +
+  theme_minimal()
+
+ggplotly(p)
+```
+
+See Sadafs paper: calculate scores for e.g. maturity, cytotoxicity, exhaustion and compare TLS clusters using statistical test
+
+# Quantification of maturity markers FCER2, CR2 
+
+```{r}
+VlnPlot(TLScells, features = c("CR2", "FCER2", "CXCL13"), group.by = "tls.cluster", pt.size = 0)
+
+expr_data <- FetchData(TLScells, vars = c("FCER2", "CR2", "CXCL13", "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(MaturityScore = rowMeans(select(., FCER2, CR2, CXCL13)))
+
+plt <- ggplot(plot_data, aes(y = MaturityScore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+  #geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "Maturation Score by TLS Region",
+       subtitle = "Genes used: CR2, FCER2, CXCL13",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 15),
+        axis.title = element_text(size= 20),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 15),
+        legend.position = "none")
+
+ggsave(plt, file = paste0(fig_dir,"6_TLSregions_MaturityScore", ".png"), width = 10, height=10)
+
+```
+
+## average expression
+```{r}
+avg_expr <- AverageExpression(TLScells, assays = "Xenium", features = c("CR2", "FCER2", "CXCL13"))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average activation marker Gene Expression")
+
+#Heatmap
+library(pheatmap)
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+```
+
+
+
+# cytotoxicity score
+
+```{r}
+cytotoxMarker <- c("GZMA", "GZMB", "GZMK" )
+expr_data <- FetchData(TLScells, vars = c(cytotoxMarker, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(CytotoxScore = rowMeans(select(., GZMA, GZMB, GZMK)))
+
+ggplot(plot_data, aes(y = CytotoxScore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+ # geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "cytotoxic Score by TLS Region",
+       subtitle = "GZMA, GZMB, GZMK",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()
+
+```
+
+# Quantification of activated DC (sadafs paper)
+
+```{r}
+activeDC <- c("LAMP3", "CD80", "CD83", "CD86")
+expr_data <- FetchData(TLScells, vars = c(activeDC, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(actDCScore = rowMeans(select(., LAMP3, CD80,CD83, CD86)))
+
+ggplot(plot_data, aes(y = actDCScore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+  #geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "Active DC Score by TLS Region",
+       subtitle = "LAMP3, CD80,CD83, CD86", 
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()
+
+```
+
+# Bcell markers (sadafs paper)
+
+```{r}
+Bcell <- c("BANK1", "CD19", "CD22", "CD79A", "CR2", "FCRL2", "MS4A1", "PAX5", "FCER2", "MZB1")
+Bcell %in% genelist
+expr_data <- FetchData(TLScells, vars = c(Bcell, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(BcellScore = rowMeans(select(., BANK1, CD19, CD22, CD79A, CR2, FCRL2, MS4A1, PAX5, FCER2, MZB1)))
+
+plt <- ggplot(plot_data, aes(y = BcellScore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+ # geom_jitter(width = 0.2, alpha = 0.5, size = 0.5) +
+  labs(title = "Bcell Score by TLS Region",
+       subtitle = "Genes used: BANK1, CD19, CD22, CD79A, CR2, FCRL2, MS4A1, PAX5, FCER2, MZB1",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 15),
+        axis.title = element_text(size= 20),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 15),
+        legend.position = "none")
+
+ggsave(plt, file = paste0(fig_dir,"6_TLSregions_BcellScore", ".png"), width = 10, height=10)
+
+```
+
+# T cells
+
+```{r}
+Tcell <- c("CD3D", "CD3E", "CD3G","CD4", "CD8A", "CD28", "ICOS", "CTLA4")
+VlnPlot(TLScells, features = Tcell, pt.size = 0)
+Tcell %in% genelist
+
+expr_data <- FetchData(TLScells, vars = c(Tcell, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(TcellScore = rowMeans(select(., CD3D, CD3G, CD3E, CD28, ICOS, CTLA4)))
+
+plt <- ggplot(plot_data, aes(y = TcellScore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+ # geom_jitter(width = 0.2, alpha = 0.5, size = 0.5) +
+  labs(title = "Tcell Score by TLS Region",
+       subtitle = "Genes used for score: CD3D, CD3G, CD3E, CD28, ICOS, CTLA4",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 15),
+        axis.title = element_text(size= 20),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 15),
+        legend.position = "none")
+
+ggsave(plt, file = paste0(fig_dir,"6_TLSregions_TcellScore", ".png"), width = 10, height=10)
+```
+
+
+# Quantification of Exhaustion markers
+
+```{r}
+expr_data <- FetchData(TLScells, vars = c("CTLA4", "PDCD1", "HAVCR2", "LAG3", "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(EXscore = rowMeans(select(., CTLA4, PDCD1, HAVCR2, LAG3)))
+
+plt <- ggplot(plot_data, aes(y = EXscore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+  #geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "Exhaustion Score by TLS Region",
+       subtitle = "Genes used for score: CTLA4, PDCD1, HAVCR2, LAG3",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 15),
+        axis.title = element_text(size= 20),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 15),
+        legend.position = "none")
+
+ggsave(plt, file = paste0(fig_dir,"6_TLSregions_ExhaustionScore", ".png"), width = 10, height=10)
+
+```
+
+
+
+```{r}
+TLScells <- SetIdent(TLScells, value = "tls.cluster")
+avg_expr <- AverageExpression(TLScells, assays = "Xenium", features = c("CTLA4", "PDCD1", "HAVCR2", "LAG3"))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average Th1 Gene Expression")
+
+#Heatmap
+library(pheatmap)
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+```
+
+
+# DC in TLS paper:
+
+```{r}
+mDC <- c("CD40", "CD80",  "CCL21", "LAMP3")
+mDC %in% genelist
+
+expr_data <- FetchData(TLScells, vars = c(mDC, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(mDCscore = rowMeans(select(., CD40, CD80, CCL21, LAMP3)))
+
+ggplot(plot_data, aes(y = mDCscore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+  #geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "mature DCs by TLS Region",
+       subtitle = "CTLA4, PDCD1, HAVCR2, LAG3",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()
+```
+
+
+
+```{r}
+HEV <- c("LTB", "LTA", "CHST4", "FUT7" ,"ENPP2", "CH25H", "C4BPA", "ENPP6","ICAM1", "VCAM1") #high endothelial venules # https://www.sciencedirect.com/science/article/pii/S1535610822005499?via%3Dihub#undfig1 CHST4 to ENPP6 are associated with good response to ICB therapy, ICAM & VCAM1 are elevated in Tumoral-HEV
+VlnPlot(TLScells, features = HEV)
+
+expr_data <- FetchData(TLScells, vars = c(HEV, "tls.cluster"))
+head(expr_data)
+
+plot_data <- expr_data %>%
+  mutate(HEVscore = rowMeans(select(., LTB, LTA, CHST4, FUT7 ,ENPP2, CH25H, C4BPA, ENPP6, ICAM1, VCAM1)))
+
+plt <- ggplot(plot_data, aes(y = HEVscore, x = tls.cluster, fill = tls.cluster)) +
+  geom_boxplot(outlier.shape = 19) +
+  #geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  labs(title = "HEV score by TLS Region",
+       subtitle = "LTB, LTA, CHST4, FUT7 ,ENPP2, CH25H, C4BPA, ENPP6, ICAM1, VCAM1",
+       y = "Average Expression Score",
+       x = "TLS Region") +
+  theme_minimal()+
+  theme(axis.text = element_text(size = 15),
+        axis.title = element_text(size= 20),
+        plot.title = element_text(size = 25),
+        plot.subtitle = element_text(size = 15),
+        legend.position = "none")
+
+ggsave(plt, file = paste0(fig_dir,"6_TLSregions_HEVScore", ".png"), width = 10, height=10)
+
+```
+
+
+
+
+************************************* 
+```{r}
+# Filter the two groups
+group3 <- plot_data[plot_data$tls.cluster == "TLS3", "HEVscore"]
+group11 <- plot_data[plot_data$tls.cluster == "TLS11", "HEVscore"]
+
+TLS3 <- plot_data %>%
+  filter(tls.cluster == "TLS3")
+
+# Plot histograms or boxplots to visualize
+ggplot(TLS3, aes(x = HEVscore))+
+  geom_histogram(bins = 100) +
+  scale_x_log10()
+
+hist(group3, main = "TLS Cluster 3", xlab = "HEVscore")
+hist(group11, main = "TLS Cluster 11", xlab = "HEVscore")
+
+
+
+wilcox.test(HEVscore ~ tls.cluster, data = plot_data[plot_data$tls_cluster %in% c(3, 11),])
+
+head(group3)
+```
+
+*************************************
+
+
+```{r}
+coords <- GetTissueCoordinates(TLSregions)
+
+TLSregions@meta.data$cell <- rownames(TLSregions@meta.data)
+
+new_df <- merge(coords, TLSregions@meta.data[, c("tls.status","tls.cluster", "cell")], by = "cell")
+
+TLS11coords <- subset(new_df, tls.cluster == "TLS11")
+
+write.csv(TLS11coords,file=paste0(data_dir,"6_TLS11coords",".csv"), row.names=FALSE)
+
+```
+
+
+
+```{r}
+coords <- GetTissueCoordinates(TLSregions)
+
+TLSregions@meta.data$cell <- rownames(TLSregions@meta.data)
+
+new_df <- merge(coords, TLSregions@meta.data[, c("tls.status","tls.cluster", "cell")], by = "cell")
+
+TLS3coords <- subset(new_df, tls.cluster == "TLS3")
+
+write.csv(TLS11coords,file=paste0(data_dir,"6_TLS3coords",".csv"), row.names=FALSE)
+
+```
+
+
+```{r}
+coords_all <- GetTissueCoordinates(xenium_BroadCellTypes)
+
+xenium_BroadCellTypes@meta.data$cell <- rownames(xenium_BroadCellTypes@meta.data)
+
+allCellsdf <- merge(coords_all, xenium_BroadCellTypes@meta.data[, c("annotationRes0.3", "tls.status", "cell")], by = "cell")
+
+write.csv(allCellsdf, file=paste0(data_dir, "3_Annotation",".csv"), row.names=FALSE)
+
+
+```
+

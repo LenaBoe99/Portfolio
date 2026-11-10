@@ -1,0 +1,287 @@
+---
+title: "Broad Celltype Annotation"
+author: "Lena Böhringer"
+date: "2025-03-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(Seurat)
+library(future)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+
+#plan("cluster", workers = 5)
+options(future.globals.maxSize = Inf)
+
+data_dir <- "/omics/groups/OE0436/data/lena/output"
+fig_dir <- "/omics/groups/OE0436/data/lena/output/figures/knitting/"
+
+infile <- file.path(data_dir, "2_Xenium_25dims_res0.3.RDS")
+xenium <- readRDS(infile)
+xenium
+```
+
+# Identifying cell types using known markers
+
+Since the genes are limited to the features selected in the panel, we need to check if the features we want to look at are part of the genelist. For this we can create a vector that stores all the gene names by looking at the rownames
+
+```{r}
+genelist <- rownames(xenium)
+genelist
+```
+
+Using known markers we can check with plots like Violinplot or Featureplot, which cluster express these markers. 
+For example we could check CD3, CD4, CD8 for T cells, CD19 and MS4A1 for B cells, VWF for endothelial cells or LAMP3 for dendritic cells. 
+    
+```{r}
+
+VlnPlot(xenium, features = c("CD3D", "CD3E", "CD3G"), pt.size = 0)
+VlnPlot(xenium, features = c("CD4", "CD8A", "CD8B"), pt.size = 0)
+VlnPlot(xenium, features = c("VWF"), pt.size = 0)
+VlnPlot(xenium, features = c("MS4A1", "CD19", "FCRL2", "CD79A"), pt.size = 0)
+VlnPlot(xenium, features = "LAMP3", pt.size = 0) 
+
+FeaturePlot(xenium, features = c("CD3D","CD4", "CD8A", "CD8B", "VWF", "MS4A1", "CD19", "LAMP3")) 
+```
+
+# Differential gene expression analysis 
+
+This manual annotation can be quite tedious. Thus another approach is to find differential expressed genes in each cluster.FindAllMarkers is a function that are significantly more expressed in a cluster compared to all other clusters. Using these marker genes we can annotate our cell types more easily by using the too ACT (http://xteam.xbio.top/ACT/). THis web-based platform help to automatically assign cell types based on gene expression signatures. The tool uses a large reference database of known cell type markers from various public datasets. It is recommended to use the top 30 most expressed genes of a cluster as input.
+
+
+```{r}
+library(presto) #using this package, the FindAllMarkers function will work much faster
+
+xenium.markers <- FindAllMarkers(xenium, 
+                                 min.pct = 0.25, #at least 25% of cell must express gene in cluster
+                                 logfc.threshold = 0.25) #only genes with logfoldchange of higher than 0,25 are considered
+
+top30_markers <- xenium.markers %>% 
+  filter(avg_log2FC > 0) %>%
+  group_by(cluster) %>% 
+  top_n(n = 30, wt = avg_log2FC)
+
+# Loop through each cluster and print the gene names for the ACT input
+for (cluster_id in unique(top30_markers$cluster)) {
+  # Extract gene names as a single comma-separated string
+  cluster_genes <- top30_markers %>%
+    filter(cluster == cluster_id) %>%
+    pull(gene) %>%
+    paste(collapse = ",")
+
+  # Print in the desired format
+  cat("cluster", cluster_id, ":", cluster_genes, "\n")
+}
+
+```
+
+JobID: 20250410030349VPQTGK02AOXWAP
+
+cluster0:EPCAM,MGST1,ERBB2,VEGFA,SOX4,IGFBP3,CCND1,PXDN,OCLN,TJP2,TJP3,ST3GAL4,EGFR,APOD,SLC2A1,HPGD,B3GNT3,SBK1,SOX2,AQP4 
+-> epithelial cell / progenitor 
+
+cluster1:TRAC,CD2,CD3E,CCR4,LTB,IL7R,CD3D,ITGAL,TCF7,CD28,LAT,FCMR,CTLA4,CD3G,CD5,FOXP3,GZMK,PYHIN1,SH2D2A,STAT4 
+-> Tcell CD4+
+
+cluster2:FCGR3B,CD163,MRC1,GPNMB,SERPINA1,ITGAX,C1QC,CTSB,MS4A6A,CSF1R,APOE,CD86,ITGAM,FCER1G,C1orf162,MS4A4A,AIF1,RNASE6,KCNMA1,CD68 
+-> Microglial cell
+
+cluster3:CCL5,GNLY,GZMA,CD2,NKG7,GZMB,KLRD1,CD8A,CD52,CD3E,ITGAL,SAMD3,FASLG,CORO1A,MATK,CD7,CD3D,STAT4,CD3G,SKAP1 
+-> Tcell CD8+
+
+cluster4:SH3BGRL3,ANXA1,STAT3,TGFB1,IL32,IDO1,IGKC,COL1A1,FN1,CD163,COL3A1,DCN,BGN,IGLC3,JCHAIN,FCGR3B,MGP,POSTN,SERPINA1,COL1A2 
+-> Fibroblast
+
+cluster5:SPARCL1,COL4A2,A2M,PLVAP,COL4A1,CD34,RGS5,CDH5,ENG,FLT1,HSPG2,PDGFRB,NOTCH3,VWF,NID1,PODXL,LAMA4,KDR,NOTCH4,NR2F2 
+-> Endothelial cells
+
+cluster6:DCN,BGN,ITGA11,COL6A1,TIMP3,COL4A1,INHBA,CALD1,COL5A1,POSTN,FAP,CCN2,TAGLN,MGP,PDGFRB,LOX,COL1A2,CCDC80,LOXL2,TNC 
+-> Fibroblast (cancer associated?)
+
+cluster7:MS4A1,BANK1,CD79A,CD19,CD22,LTB,CD48,IGHM,FCRL2,PAX5,FCMR,CD79B,CD52,BCL11A,CD74,CD40,CORO1A,BCL2,RALGPS2,BLNK 
+-> Bcell
+
+cluster8:MZB1,CD79A,JCHAIN,CD38,IGLC7,SSR4,IGLC3,POU2AF1,IGLC2,PECAM1,IGHG1,XBP1,CYTIP,CHST2,IGHA1,RALGPS2,BLNK,IGHM,B2M,IDH2 
+-> Plasma cell 
+
+cluster9:CLU,CRABP1,SLC4A4,F13A1,PLTP,KCNMA1,CEMIP,NCALD,SELENOP,IGFBP5,FBLN1,FABP5,FZD1,SLC7A8,MS4A4A,PTGDS,ENPP6,NCAM1,PDGFD,ELOVL2 
+-> Mueller Glial cell
+
+cluster10:LAMP3,CD83,CCL19,CD80,CD274,IL7R,IDO1,CD40,TTYH2,ITGA4,CSF2RB,EBI3,NFKB1,CD86,ST3GAL6,CD74,CYTIP,HLA-DQA1,CXCL9,NET1
+-> Myeloid dendritic cell
+
+cluster11:GZMB,BCL11A,SPIB,JCHAIN,TCF4,BLNK,CD4,CSF2RB,IGHM,MZB1,CD36,RNASE6,LTB,MS4A6A,CD74,PTGDS,RNASET2,CCL18,ENPP2,HLA-DQA1 
+-> plasmacytoid DC
+
+# Rename Clusters
+after we know which cluster represents which cell type3 we can rename the clusters.
+
+```{r renameClusters}
+cell.types <- c("0" = "Progenitor",
+              "1" = "Tcell.CD4",
+              "2" = "Microglia",
+              "3" = "Tcell.CD8",
+              "4" = "Fibroblast1",
+              "5" = "EndothelialCell",
+              "6" = "Fibroblast2",
+              "7" = "Bcell",
+              "8" = "PlasmaCell",
+              "9" = "MuellerCell",
+              "10" = "myeloidDC",
+              "11" = "plasmacytoidDC")
+
+xenium_BroadCellTypes <- RenameIdents(xenium, cell.types)
+
+dimplt1 <- DimPlot(xenium_BroadCellTypes, label = T, raster = FALSE)
+ggsave(dimplt1, file = paste0(fig_dir,"3_BroadCellTypes", ".png"), width = 12, height=12)
+```
+
+```{r}
+unique(Idents(xenium_BroadCellTypes))
+
+# save cell types as factors
+Idents(xenium_BroadCellTypes) <- factor(Idents(xenium_BroadCellTypes),
+                                        levels = c("Tcell.CD4", "Tcell.CD8", "Bcell", "PlasmaCell", "myeloidDC", "plasmacytoidDC", "Microglia", "MuellerCell",  "Progenitor", "EndothelialCell",  "Fibroblast1", "Fibroblast2")) # be carefull to use exaclty the same names as you have assigned previously 
+
+#safe annotations as metadata
+xenium_BroadCellTypes$annotationRes0.3 <- as.character(Idents(xenium_BroadCellTypes)) 
+saveRDS(xenium_BroadCellTypes, file = file.path(data_dir, "3_xenium_BroadCellTypes.RDS"))
+```
+
+# Compare how many cells are in each cluster
+
+```{r}
+data <- as.data.frame(table(xenium_BroadCellTypes$annotationRes0.3)) 
+colnames(data) <- c("cell.type", "count")
+
+ncells <- ggplot(data, aes(x= cell.type, y=count, fill= cell.type)) + 
+  geom_col() +
+  theme_classic() +
+  geom_text(aes(label=count),
+            position=position_dodge(width=0.9), vjust=-0.25) +
+  ggtitle("Cells per cell type") + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+ncells
+
+ggsave(ncells, file = paste0(fig_dir,"3_CellsPerBroadCellTypes", ".png"), width = 12, height=12)
+
+```
+
+# To which Cell type do TLS cells belong?
+
+```{r}
+tls_cells <- WhichCells(xenium_BroadCellTypes, expression = tls.status == 1)
+plt <- ImageDimPlot(xenium_BroadCellTypes, group.by = "annotationRes0.3",
+                                         cells = tls_cells, size = 0.5, alpha = 0.2)
+
+ggsave(plt, file = paste0(fig_dir,"3_tlsStatusBroadCelltypes", ".png"), width = 12, height=12)
+
+tls_cell_types <- xenium_BroadCellTypes$annotationRes0.3[tls_cells]
+tls_cell_type_counts <- table(tls_cell_types)
+tls_cell_type_df <- as.data.frame(tls_cell_type_counts)
+colnames(tls_cell_type_df) <- c("Cell_Type", "Count")
+gplot <- ggplot(tls_cell_type_df, aes(x = reorder(Cell_Type, -Count), y = Count, fill = Cell_Type)) +
+  geom_bar(stat = "identity") +
+  theme_classic(base_size = 14) +
+  labs(title = "Cell Type Contributions to TLS", x = "Cell Type", y = "Cell Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(gplot)
+ggsave(gplot, file = paste0(fig_dir,"3_Barplot_TLScells_BroadCellTypes", ".png"), width = 12, height=12)
+```
+
+
+
+# Find out which genes are mostly expressed in TLS cells
+
+```{r}
+plt <- ImageFeaturePlot(xenium, features = c("tls.status"), size = 0.5, cols = c("white", "red"))
+ggsave(plt, file = paste0(fig_dir,"3_tlsStatus", ".png"), width = 12, height=12)
+
+# Extract gene expression for TLS+ cells
+# Get TLS+ cells
+tls_cells <- WhichCells(xenium, expression = tls.status == 1) 
+ImageDimPlot(xenium, cells = tls_cells, size = 0.05, alpha = 0.5)
+
+# Extract gene expression for TLS+ cells
+tls_expr <- GetAssayData(xenium, assay = "Xenium", layer = "counts")[, tls_cells]
+
+# Sum expression for each gene across all TLS+ cells
+top_genes_tls <- rowSums(tls_expr)
+
+# Sort genes by expression level (highest first)
+top_genes_tls <- sort(top_genes_tls, decreasing = TRUE)
+
+# Convert to a data frame for plotting
+tls_gene_df <- data.frame(Gene = names(top_genes_tls), Expression = top_genes_tls)
+
+# Select the top 20 most expressed genes
+tls_gene_df_top20 <- head(tls_gene_df, 20)
+
+# Create a bar plot
+top_genes_tls <- ggplot(tls_gene_df_top20, aes(x = reorder(Gene, -Expression), y = Expression, fill = Gene)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +  # White background
+  labs(title = "Top Expressed Genes in TLS Region", x = "Gene", y = "Expression Level") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+        legend.position = "none")  # Remove legend
+
+ggsave(top_genes_tls, file=paste0(fig_dir,"3_top_genes_tls",".png"), width = 12, height=12)
+```
+
+
+
+
+```{r}
+plt <- ImageDimPlot(xenium_BroadCellTypes, col = DiscretePalette(12, palette = "polychrome", shuffle = T), size = 0.3)
+ggsave(plt, file=paste0(fig_dir,"3_ImageDimPlot_polychrome2",".png"), width = 12, height=12)
+
+plt <- ImageDimPlot(xenium_BroadCellTypes, size = 0.3) +
+  theme(legend.text = element_text(size=20))
+ggsave(plt, file=paste0(fig_dir,"3_ImageDimPlot_ggplot2",".png"), width = 12, height=12)
+
+
+plt <- DimPlot(xenium_BroadCellTypes, label.size = 5, label = T, raster = F) +
+  ggtitle("DEG Annotation")
+ggsave(plt, file=paste0(fig_dir,"3_BroadCellTypes_Dimplot",".png"), width = 12, height=12)
+
+```
+
+# Overlay TLS status with ImageDimPlot
+```{r}
+# Step 1: Extract base plot (cell type colors)
+p <- ImageDimPlot(xenium_BroadCellTypes, size = 0.3)
+
+# Step 2: Get metadata including TLS status
+xenium_BroadCellTypes@meta.data$cell_id <- rownames(xenium_BroadCellTypes@meta.data)
+
+# Step 3: Get spatial coordinates from image
+coords <- GetTissueCoordinates(xenium_BroadCellTypes)  
+coords$cell_id <- coords$cell
+  
+  
+# Step 4: Join coords with TLS status
+plot_df <- merge(coords, xenium_BroadCellTypes@meta.data[, c("tls.status", "cell_id")], by = "cell_id")
+
+# Step 5: Subset TLS-positive cells
+tls_df <- subset(plot_df, tls.status == 1)
+
+# Step 6: Add TLS overlay (e.g., red border dots)
+plt1 <- plt + 
+  geom_point(data = tls_df, aes(x = y, y = x), 
+             color = "white", fill = "white", alpha = 0.5, size = 0.1, shape = 16)
+  
+
+ggsave(plt1, file=paste0(fig_dir,"3_ImageDimPlot_TLSoverlay1",".png"), width = 12, height=12)
+
+```
+
+
+

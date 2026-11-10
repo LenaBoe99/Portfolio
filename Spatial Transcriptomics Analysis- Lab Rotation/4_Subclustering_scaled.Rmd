@@ -1,0 +1,402 @@
+---
+title: "4_Subclustering"
+author: "Lena Böhringer"
+date: "2025-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(future)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+
+#plan("cluster", workers = 5)
+options(future.globals.maxSize = Inf)
+
+data_dir <- "/omics/groups/OE0436/data/lena/output"
+fig_dir <- "/omics/groups/OE0436/data/lena/output/figures/"
+
+infile <- file.path(data_dir, "3_xenium_BroadCellTypes.RDS")
+xenium_BroadCellTypes <- readRDS(infile)
+```
+
+Now we will subcluster the broad cell types that were annotated in the last step. By only analysing a subset of cells the resolution of clustering might be better since we exclude other more distant subtypes. This might improve finding for example rare T cell subtypes.
+
+**Disclaimer**: This analysis was not finished since subtype determination was quite difficult due to missing marker genes. Later analysis (TLSanalysis) was done with broad cell types.
+
+# CD4+ T cells
+
+First we will subcluster the cells that were assigned to the CD4+ Tcell cluster. For this we will use the function subset and create a new object that only contains cell from one subcluster. Since the dimreductions from the previous analysis might not describe the variability of this dataset, we run them again. Its recommended to re-scale the data (https://satijalab.org/seurat/archive/v3.0/interaction_vignette.html) 
+
+```{r}
+#Subset Tcell CD4 cluster
+Tcell1x <- subset(xenium_BroadCellTypes, subset = annotationRes0.3 == "Tcell_CD4")
+DimHeatmap(Tcell1x, dims= 1:5, cells=500, balanced=TRUE)
+
+
+#remove metadata for broad cell types
+Tcell1$Xenium_snn_res.0.3 <- NULL
+Tcell1$annotationRes0.3 <- NULL
+Tcell1$seurat_clusters <- NULL
+
+#re-run scaling, dimreduction and clustering
+Tcell1 <- NormalizeData(Tcell1)
+Tcell1 <- ScaleData(Tcell1)
+Tcell1 <- RunPCA(Tcell1, npcs = 30)
+ElbowPlot(Tcell1, ndims = 30) 
+Tcell1 <- RunUMAP(Tcell1, dims = 1:20)
+Tcell1 <- FindNeighbors(Tcell1, dims = 1:20)
+Tcell1 <- FindClusters(Tcell1, resolution = 0.5)
+Tcell1 <- FindClusters(Tcell1, resolution = 0.3)
+plt <- DimPlot(Tcell1)+
+  ggtitle("Tcell1 subcluster SCALED res 0.3")
+ggsave(plt, file = paste0(fig_dir,"4_Tcell1_scaled_Dimplot_res0.3", ".png"), width = 12, height=12)
+
+saveRDS(Tcell1, file = file.path(data_dir, "4_Tcell1.RDS"))
+```
+
+```{r}
+Thf <- c("CXCL13", "ICOS", "PDCD1", "BCL6")
+Th1 <- c("CD38", "CXCL9", "IL2", "CXCL10", "CXCL11", "IFNG",  "TBX21")
+Th2 <- c("IL4", "CCR6","CCR4")
+Treg <- c("FOXP3")
+Th17 <- c("IL1R1")
+
+VlnPlot(Tcell1, features = Thf, pt.size = 0)
+VlnPlot(Tcell1, features = ThTh12, pt.size = 0)
+VlnPlot(Tcell1, features = Th2, pt.size = 0)
+VlnPlot(Tcell1, features = Treg, pt.size = 0)
+VlnPlot(Tcell1, features = Th17, pt.size = 0)
+
+```
+
+Using these markers it is not easy determining the different subtypes. Thus we can try FindAllMarkers again.
+
+## differential gene expression analysis 
+
+```{r}
+Tcell1 <- SetIdent(Tcell1, value = "Xenium_snn_res.0.3")
+
+Tcell1.markers <- FindAllMarkers(Tcell1, 
+                                 min.pct = 0.25, #at least 25% of cell must express gene in cluster
+                                 logfc.threshold = 0.25) #only genes with logfoldchange of higher than 0,25 are considered
+
+top20_markers <- Tcell1.markers %>% 
+  filter(avg_log2FC > 0) %>%
+  group_by(cluster) %>% 
+  top_n(n = 20, wt = avg_log2FC)
+
+
+# Loop through each cluster and print the gene names
+for (cluster_id in unique(top20_markers$cluster)) {
+  # Extract gene names as a single comma-separated string
+  cluster_genes <- top20_markers %>%
+    filter(cluster == cluster_id) %>%
+    pull(gene) %>%
+    paste(collapse = ",")
+
+  # Print in the desired format
+  cat("cluster", cluster_id, ":", cluster_genes, "\n")
+}
+```
+
+**highly expressed genes per cluster Tcell1**
+JobID: 202504072135028J0RCJCTTIAAWY
+
+cluster0:TCF7,CD48,IL7R,FCMR,LAMP3,CYTIP,GZMK,LTB,CD52,CD3E,CORO1A,PTPRC,TRAC,EEF1B2,LAT,CD28,CD8A,CD5,PRPF38B,NFKB1 
+-> CD8+ effector memory T cell
+
+cluster1:DCN,BGN,POSTN,COL1A2,MGP,COL3A1,COL6A1,IL1R1,COL4A1,COL5A1,CCDC80,COL1A1,TIMP3,CALD1,TAGLN,TNC,CCN2,LAMC1,FN1,CLU 
+-> Fibroblast
+
+cluster2:JUND,CORO1A,ITGA4,CASP8,FCMR,IL32,CYTIP,CTLA4,TRAC,CCR4 
+-> Regulatory T cell (No FOXP3??)
+
+cluster3:CD163,CTSB,GLUL,MRC1,FCGR3B,CCL18,CD74,F13A1,SERPINA1,CTSS,C1QC,GPNMB,CXCL9,APOE,MS4A6A,AIF1,ENPP2,HLA-DQA1,CST3,SELENOP 
+-> Microglia
+
+cluster4:JCHAIN,IGLC3,IGHG1,IGLC7,IGLC2,XBP1,MZB1,IGKC,SSR4,CD79A,IGHM,PECAM1 
+-> plasma cell
+
+cluster5:COL4A1,COL4A2,SPARCL1,THY1,CCL19,NOTCH3,PDGFRB,RGS5,CALD1,IGFBP5,COL6A1,A2M,NID1,ACTA2,LAMC1,VIM,ENG,SERPING1,IFITM3,CXCL9 
+-> Pericyte
+
+cluster6:CLU,IGFBP5,F13A1,CRABP1,MGP,PLTP,SLC4A4,CEMIP,SELENOP,SERPING1,CCDC80,FABP5,FBLN1,TSC22D1,KCNMA1,NCALD,APOE,CCN2,C1QC,IL1R1 
+-> Fibroblast
+
+cluster7:MGST1,EPCAM,CCND1,SOX4,B4GALT1,ITGB1,VEGFA,HOPX,ERBB2,NET1,IGFBP3,ST3GAL4,STMN1,NT5E,GLUL,ICAM1,CDK6,IDH1,CAPG,SLC39A1 
+-> Progenitor cell
+
+cluster8:MKI67,STMN1,TOP2A,PCNA,HIST1H3C,CDC20,CDK6,SSRP1,S100A4,CTLA4,CD2,ACTB,ICOS,IDH2,CD38,H3F3A,ITM2A,CXCL13,CASP3,FABP5 
+-> Transit amplifying cell???
+
+
+We see that the number of differentially expressed genes is reduced a lot. Thus the results from the ACT tool also get less confident.
+
+## average expression Tfh 
+by calculating the average expression per cluster, it might be easier to see which clusters express the markers most.
+
+```{r}
+avg_expr <- AverageExpression(Tcell1, assays = "Xenium", features = c("PDCD1", "CXCR5", "ICOS", "CXCL13", "BCL6"))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average Tfh Gene Expression")
+
+#Heatmap
+library(pheatmap)
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+
+#Featureplot
+FeaturePlot(Tcell1, features = c("PDCD1", "CXCR5", "ICOS", "CXCL13", "BCL6"))
+
+```
+
+## Average Expression Th2
+
+```{r}
+avg_expr <- AverageExpression(Tcell1, assays = "Xenium", features = c("IL4", "CCR6","CCR4"))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average Th1 Gene Expression")
+
+#Heatmap
+library(pheatmap)
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+
+#FeaturePlot
+FeaturePlot(Tcell1, features = c("IL4", "CCR6","CCR4") )
+```
+
+# memory T cell 
+
+```{r}
+CD4_EM <- c("KLRB1", "ITGB1", "CCL5", "GZMA", "ANXA1", "IL7R", "CD4" ) #ACT search markers
+VlnPlot(Tcell1, features = CD4_EM, pt.size = 0)
+
+avg_expr <- AverageExpression(Tcell1, assays = "Xenium", features =c("KLRB1", "ITGB1", "CCL5", "GZMA", "ANXA1", "IL7R", "CD4" ))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average CD4 effector memory Gene Expression")
+
+#Heatmap
+library(pheatmap)
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+```
+
+## average expression Treg
+```{r}
+VlnPlot(Tcell1, features = c("FOXP3", "CTLA4"), pt.size = 0)
+
+avg_expr <- AverageExpression(Tcell1, assays = "Xenium", features = c("FOXP3", "CTLA4"))
+avg_expr_df <- as.data.frame(avg_expr$Xenium)
+avg_expr_df$gene <- rownames(avg_expr_df)
+avg_expr_long <- tidyr::pivot_longer(avg_expr_df, -gene, names_to = "cluster", values_to = "avg_expression")
+
+ggplot(avg_expr_long, aes(x = gene, y = avg_expression, fill = cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Average CD4 effector memory Gene Expression")
+
+#Heatmap
+avg_matrix <- avg_expr$Xenium
+scaled_matrix <- t(scale(t(avg_matrix)))
+pheatmap(scaled_matrix,
+         cluster_rows = F,
+         cluster_cols = F,
+         display_numbers = TRUE,
+         main = "Avg Expression Heatmap (z-scored)",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+```
+
+It looks like all marker genes are in Cluster 7&8 -> no subtype determination possible
+
+
+# Tcell 2
+
+```{r}
+Tcell2 <- subset(xenium_BroadCellTypes, subset = annotationRes0.3 == "Tcell_cyto")
+Tcell2$Xenium_snn_res.0.3 <- NULL
+Tcell2$annotationRes0.3 <- NULL
+Tcell2$seurat_clusters <- NULL
+Tcell2 <- NormalizeData(Tcell2)
+Tcell2 <- ScaleData(Tcell2)
+Tcell2 <- RunPCA(Tcell2, npcs = 30)
+ElbowPlot(Tcell2, ndims = 30)
+
+Tcell2 <- RunUMAP(Tcell2, dims = 1:20)
+Tcell2 <- FindNeighbors(Tcell2, dims = 1:20)
+Tcell2 <- FindClusters(Tcell2, resolution = 0.4)
+plt <- DimPlot(Tcell2)+
+  ggtitle("Tcell2 subcluster SCALED res0.4")
+ggsave(plt, file = paste0(fig_dir,"4_Tcell2_Scaled_Dimplot", ".png"), width = 12, height=12)
+```
+
+
+```{r}
+# https://www.sciencedirect.com/science/article/pii/S1097276522012126?via%3Dihub
+Tex1 <- c("CDC20", "TOP2A", "MKI67", "STMN1", "PCNA", "CDK4", "SSRP1")
+Tex2 <- c("VCAM1", "CTLA4", "CXCL13", "HAVCR2", "ICOS", "PDCD1", "CDK6", "GZMB", "STAT3", "CD27", "RGCC", "FABP5", "LAG3")
+Tex3 <- c("CCL3", "CD38", "FASLG", "HAVCR2", "PDCD1", "IFNG", "CCL4L2", "CTSS", "CD27", "IDH2", "RNASET2", "GZMA", "CD63", "HLA-DQB1", "LAG3", "HLA-DQA1", "CCL4", "SERPINB1")
+Teffmem1 <- c("GPR183", "TNF", "IL7R", "RGCC", "GLUL", "TCF7", "BCL6", "ANXA1", "LTB", "NR4A2", "JUND", "STAT4", "B4GALT1")
+Teffmem2 <- c("TCF7", "IL7R", "LTB", "A2M", "GPR183")
+
+plot <- DoHeatmap(Tcell2, features = c(Tex1, Tex2, Tex3))
+ggsave(plot, file = paste0(fig_dir,"aaTest", ".png"), width = 12, height=12)
+
+plot <- DoHeatmap(Tcell2, features = c(Teffmem1, Teffmem2))
+ggsave(plot, file = paste0(fig_dir,"4_Tcell2_Teffmem1", ".png"), width = 12, height=12)
+
+VlnPlot(Tcell2,  features = Teffmem1, pt.size = 0)
+```
+
+```{r}
+#naive T cells
+genelist <- rownames(xenium_BroadCellTypes)
+Tcell_naive <- c("CTB-133G6.1", "TMEM45B", "AK5", "NOG", "NGFRAP1", "TCEA3", "VSIG1", "FBLN5", "EPHX2",
+                 "NUAK2", "PIK3IP1", "HPCAL4", "PASK", "ANKRD55", "C16ORF74", "SGK223", "GPR146", "PABPC3",
+                 "CYSLTR1", "LEF1", "ZBTB18", "VIPR1", "GAL3ST4", "APBA2", "TCP11L2", "HEMGN", "SLC22A17",
+                 "FHIT", "SLC16A10", "ZNF563", "FCMR", "LDLRAP1", "SULT1B1", "ATM", "SELL", "GIMAP2", "SESN3",
+                 "CACNA1I", "C1ORF162", "EVI2B", "ATG9B", "RASA3", "C14ORF132", "TXK", "MFGE8", "DBP",
+                 "SERINC5", "EVI2A", "MMP28", "ACACB", "SH3YL1", "RASGRP2", "ACTN1", "DPEP2", "CSGALNACT1",
+                 "TMEM143", "EDAR", "ADPRM", "TMEM204", "KLF2", "ADD3", "PPP1R3E", "TTC28", "GCNT4",
+                 "TMEM63A", "IL24", "PLCL1", "LETMD1", "SLC8B1", "ITGA6")
+df <- data.frame(Gene = Tcell_naive, In_List = Tcell_naive %in% genelist)
+Tcell_naive <- c("FCMR", "TXK", "KLF2", "PLCL1")
+
+plot <- DoHeatmap(Tcell2, features = Tcell_naive)
+ggsave(plot, file = paste0(fig_dir,"4_Tcell2scaled_naive_heatmap", ".png"), width = 12, height=12)
+
+VlnPlot(Tcell2,  features = Tcell_naive, pt.size = 0)
+
+Cyto <- c("CCL5", "GZMK", "GNLY", "FGFBP2", "C1orf21", "KLRF1", "FCGR3A", "PTGDR", "KLRC2",
+          "EOMES", "S1PR5", "CLIC3", "AOAH", "CADM1", "DTHD1", "LILRB1", "SAMD3", "ZNF683",
+          "KLRD1", "NCR1", "FAM49A", "KLRG1", "CTSW", "CD244", "CMC1", "APOBEC3H", "CST7",
+          "CX3CR1", "FCRL6", "TMCC3", "PLA2G16", "TYROBP", "TPRG1", "C12orf75", "PLCG2",
+          "PLEK", "RCAN2", "DKK3", "ADRB2", "FCRL3", "NKG7", "PPP2R2B", "SYNGR1", "KLRC4",
+          "HLA-DPB1", "DAPK2", "F2R", "KIR3DL2", "B3GAT1", "CD8B", "TTC16", "GALNT3", "SCD5",
+          "PDGFD", "ABCB1", "MXRA7", "CTBP2", "CD8A", "ZEB2", "SYTL2", "CHN2", "FGR",
+          "TGFBR3", "SETBP1", "COLGALT2", "KIR2DL4", "FKBP1B", "ADGRG1")
+df <- data.frame(Gene = Cyto, In_List = Cyto %in% genelist)
+
+Cyto <- c("CCL5", "GZMK", "GNLY", "FCGR3A", "EOMES", "SAMD3", "KLRD1", "CX3CR1", "TYROBP", "NKG7", "CD8B", "PDGFD", "CD8A")
+plot <- DoHeatmap(Tcell2, features = Cyto)
+ggsave(plot, file = paste0(fig_dir,"4_Tcell2scaled_cyto_heatmap", ".png"), width = 12, height=12)
+VlnPlot(Tcell2,  features = Cyto, pt.size = 0)
+```
+
+
+```{r}
+VlnPlot(Tcell2, features = c("CXCL13", "HAVCR2", "LAG3", "TCF7", "ZBTB16", "IL7R", "GZMB", "GZMK"), pt.size = 0)
+```
+Cluster 6 definetly exhauster
+Cluster 8 definetly pre-exhausted
+
+```{r}
+Tcell2.markers <- FindAllMarkers(Tcell2, 
+                                 min.pct = 0.25, #at least 25% of cell must express gene in cluster
+                                 logfc.threshold = 0.25) #only genes with logfoldchange of higher than 0,25 are considered
+
+top20_markers <- Tcell2.markers %>% 
+  filter(avg_log2FC > 0) %>%
+  group_by(cluster) %>% 
+  top_n(n = 20, wt = avg_log2FC)
+
+
+# Loop through each cluster and print the gene names
+for (cluster_id in unique(top20_markers$cluster)) {
+  # Extract gene names as a single comma-separated string
+  cluster_genes <- top20_markers %>%
+    filter(cluster == cluster_id) %>%
+    pull(gene) %>%
+    paste(collapse = ",")
+
+  # Print in the desired format
+  cat("cluster", cluster_id, ":", cluster_genes, "\n")
+}
+
+```
+
+
+**Highly expressed genes per cluster Tcell2**
+Job ID: 20250407220545MJPJYXMIGBOU45
+cluster0:GNLY,SAMD3,GZMK,CD44,NKG7,CCL18,KLRD1,MATK,IL7R,KLRB1,ITGAX,EOMES,CD48,NCAM1,ITGAM,LTB,F13A1,CD163,PYHIN1,MRC1 
+-> Natural Killer cell
+cluster1:EPCAM,MGST1,CCND1,SOX4,VEGFA,IGFBP3,NET1,ERBB2,B4GALT1,IL1R1,ITGB1,PXDN,ICAM1,ST3GAL4,IDH1,NT5E,OCLN,TJP2,CXCL1,TSC22D1 
+-> Progenitor
+cluster2:JCHAIN,IGLC3,IGHG1,IGKC,COL1A1,FN1,POSTN,COL3A1,CD8A 
+-> Plasma cell
+cluster3:DCN,BGN,TIMP3,COL4A1,POSTN,MGP,COL1A2,COL4A2,CALD1,COL6A1,COL3A1,TAGLN,COL5A1,INHBA,CCN2,COL1A1,FN1,IFI27,CCDC80,ACTA2 
+-> Fibroblast
+cluster4:FCGR3B,CTSB,GPNMB,APOE,C1QC,CD74,CD163,MRC1,CTSS,CD86,SERPINA1,CD4,FCER1G,CAPG,CD3D,C1orf162,CD3G,PECAM1,HAVCR2,CXCL13 
+->Microglia
+cluster5:MKI67,STMN1,TOP2A,HIST1H3C,PCNA,CDC20,VIM,CORO1A,FABP5,IDH2,ITGA4,S100A4,CXCL13,SSRP1,TP53,ITM2A,GZMB,CALM1,SLFN13,CD38 
+-> Transit amplifying cell (???)
+cluster6:CCL3,CCL4,CCL4L2,IFNG,CCL3L1,CTLA4,CXCL13,GZMB,FASLG,LAG3,SH2D2A,CCND1,TRAC,CDK6,IDO1,ICAM1,NFKB1,SERPINB1,SERPINA1,NT5E 
+->Exhausted T cell !!
+cluster7:SPARCL1,COL4A2,PLVAP,COL4A1,RGS5,A2M,CD34,FLT1,CDH5,NOTCH3,PDGFRB,PODXL,NID1,HSPG2,ENG,THY1,PECAM1,LAMB1,IGFBP5,ITGA5 
+-> endothelial cell
+cluster8:CLU,F13A1,IGFBP5,SELENOP,PLTP,SLC4A4,CRABP1,FBLN1,MGP,NCALD,NCAM1,FABP5,GZMK,CCDC80,CD163,ITGAM,TCF7,APOE,FCMR,CEMIP
+-> Fibroblast
+
+Cluster in the T cell 2 subcluster are supposed to not be T cells? Maybe differential expression is not working or we have a lot of spilling from other cell into the cluster
+
+
+# Bcells subcluster
+```{r}
+Bcell <- subset(xenium_BroadCellTypes, subset = annotationRes0.3 == "Bcell")
+Bcell <- NormalizeData(Bcell)
+Bcell <- ScaleData(Bcell, features = rownames(Bcell))
+Bcell <- RunPCA(Bcell, npcs = 30)
+ElbowPlot(Bcell, ndims = 30) # we use only 20 dims
+
+Bcell <- RunUMAP(Bcell, dims = 1:20)
+Bcell <- FindNeighbors(Bcell, dims = 1:20)
+Bcell <- FindClusters(Bcell, resolution = 0.3)
+plt <- DimPlot(Bcell) +
+  ggtitle("Bcell subcluster SCALED res0.3")
+ggsave(plt, file = paste0(fig_dir,"4_Bcell_Scaled_Dimplot", ".png"), width = 12, height=12)
+
+saveRDS(Bcell, file = file.path(data_dir, "4_Bcell_scales.RDS"))
+```
+

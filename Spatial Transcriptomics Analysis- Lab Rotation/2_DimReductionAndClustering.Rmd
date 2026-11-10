@@ -1,0 +1,138 @@
+---
+title: "2. Dimensionality Reduction and Clustering"
+author: "Lena Böhringer"
+date: "2025-03-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(Seurat)
+library(future)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+
+plan("cluster", workers = 5)
+options(future.globals.maxSize = Inf)
+
+data_dir <- "/omics/groups/OE0436/data/lena/output/knitting"
+fig_dir <- "/omics/groups/OE0436/data/lena/output/figures/knitting/"
+
+infile <- file.path(data_dir, "1_Xenium_logtransformed.RDS")
+xenium <- readRDS(infile)
+xenium
+```
+
+# Dimensionality Reduction
+
+Since the genes observed in our experiment represent different dimension, we need to reduce the dimensionality in order to compress multiple features into single dimensions. This reduces computational work for example during clustering and enable us to look at the highly complex data in a simpler way.
+
+## Principal Component Analysis (PCA)
+
+
+```{r runPCA}
+xenium <- RunPCA(xenium, npcs = 30, features = rownames(xenium), verbose=TRUE)
+saveRDS(xenium, file = file.path(data_dir, "Xenium_PCA.RDS"))
+```
+
+We can visualize the features that define each PC
+
+```{r VisPCA}
+VizDimLoadings(xenium, dims = 1:2, reduction = "pca")
+```
+
+```{r visPCAdimplot}
+DimPlot(xenium, reduction = "pca", raster = FALSE) + NoLegend()
+```
+
+
+```{r elbowplot}
+elbow_plt <- ElbowPlot(xenium, ndims = 30)
+elbow_plt
+
+ggsave(elbow_plt, file = paste0(fig_dir,"2_elbow_plot", ".png"), width = 12, height=12)
+```
+
+Choosing the number of PCs is rather arbitrary. The more PCs we include, the more biological information we retain, but also more technical noise. If we include less PCs however, we might loose some important biological signal.
+It seems like most variance is captured in the first 20 dimensions. To be sure we can include 25 dimensions for downstream analysis or compare
+
+# UMAP and Clustering
+
+To find celltypes, the next step is to do cluster analysis. Here we do a graph-based clustering that based on the  distances between cells, based on the previously calculated PCs. First, a K-nearest neighbor graph is constructed, which is then separated into clusters using the Louvain algorithm (this is the default algorithm, alternatively we could also use SLM). With the resolution parameter we can decide whether we want broader (lower res) or more specific clusters (higher res).
+
+We first want to get an overview of the different broad cell types, and in a next step subset these broad cell types to find more specific cell types within each individual cluster.
+
+Since we were not sure before whether to use 20 or 25 dimensions, we will use both and safe the respective 
+
+```{r ClusterAndUmap20dims}
+xenium_20 <- FindNeighbors(xenium, dims = 1:20)
+xenium_20 <- FindClusters(xenium_20, resolution = 0.3)
+xenium_20 <- RunUMAP(xenium_20, dims = 1:20)
+
+plt <- DimPlot(xenium_20, reduction = "umap", raster = FALSE) +
+  ggtitle("Lung BrM - 20dim, res0.3")
+ggsave(plt, file=paste0(fig_dir,"2_UMAP_20dims_res0.3", ".png"), width = 12, height=12)
+
+saveRDS(xenium_20, file = file.path(data_dir, "2_Xenium_20dims_res0.3.RDS"))
+```
+
+
+```{r ClusterAndUmap25dims}
+xenium_25 <- FindNeighbors(xenium, dims = 1:25)
+xenium_25 <- FindClusters(xenium_25, resolution = 0.3)
+xenium_25 <- RunUMAP(xenium_25, dims = 1:25)
+
+plt <- DimPlot(xenium_25, reduction = "umap", raster = FALSE) +
+  ggtitle("Lung BrM - 25dim, res0.3")
+ggsave(plt, file=paste0(fig_dir,"2_UMAP_25dims_res0.3", ".png"), width = 12, height=12)
+
+saveRDS(xenium_25, file = file.path(data_dir, "2_Xenium_25dims_res0.3.RDS"))
+```
+
+Since we have only few genes, the clusters are not as nicely seperated as we usually see it in scRNA-seq data. We can split the umap by cluster idents to show how spread the clusters are. I only want to show this so we are later not confused when certain features are spread over the umap in the featureplot. 
+
+```{r}
+plt <- DimPlot(xenium_25, reduction = "umap", raster = F, pt.size = 0.2, split.by = "ident", ncol = 3)
+ggsave(plt, file=paste0(fig_dir,"2_split.by_Clusters", ".png"), width = 12, height=12)
+```
+
+We can also look back at the tissue slide and see how clusters are spread in the tissue:
+```{r}
+plt <- ImageDimPlot(xenium_25, size = 0.35)
+
+ggsave(plt, file=paste0(fig_dir,"2_ImageDimPlot_Clusters", ".png"), width = 12, height=12)
+```
+
+# Test and save also different cluster resolutions
+
+```{r ClusterTest}
+infile <- file.path(data_dir, "2_Xenium_25dims_res0.3.RDS") 
+xenium <- readRDS(infile) 
+
+resolutions <- c(0.3, 0.4, 0.5, 0.8)
+
+for (res in resolutions) {
+  cluster_name <- paste0("cluster_res_", res)
+  xenium <- FindClusters(xenium,
+                         resolution = res,
+                         cluster.name = cluster_name)
+  # Rename the active ident to save the clustering for this resolution
+  xenium[[cluster_name]] <- Idents(xenium)
+  dimplt <- DimPlot(xenium, reduction = "umap", raster = FALSE)
+  ggsave(dimplt, file=paste0(fig_dir,"UMAP_clustering_res", res, ".png"), width = 12, height=12)
+}
+
+saveRDS(xenium, file = file.path(data_dir, "2_Cluster_res_test_umap.RDS"))
+```
+
+
+```{r}
+sessionInfo()
+```
+
+

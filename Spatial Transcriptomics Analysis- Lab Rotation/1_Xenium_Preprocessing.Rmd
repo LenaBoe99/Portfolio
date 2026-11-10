@@ -1,0 +1,251 @@
+---
+title: "1. Introduction and Preprocessing"
+author: "Lena Böhringer"
+date: "2025-03-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First we load required packages and set the directories
+
+```{r, echo=FALSE}
+library(Seurat)
+library(future)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+
+raw_data <- "/omics/groups/OE0436/data/lena/data/0019329_R3_1658-2022__20240628_095421"
+data_dir <- "/omics/groups/OE0436/data/lena/output/knitting"
+fig_dir <- "/omics/groups/OE0436/data/lena/output/figures/knitting/"
+
+```
+
+# Background
+The Xenium Platform is a spatial transcriptomics technology, which can analyse expression of a panel of genes on single cell level. For this a fresh fozen tissue sample or FFPE tissue is placed on specialized xenium slides. The panel of probes that target specifc transcripts are then hybridized and amplified via rolling circle amplification. The probes contain specific barcodes, that can be bound by fluorescent oligos. After hybridization of the fluorescent oligo to the amplified probe the tissue slide is imaged. The process of oligo hybridization and imaging is repeated several times with different probes, since only a few fluorescent colours can be image at once. In this project we will analyze xenium data from a brain metastasis (BrM). The primary tissue of the BrM was lung and it was analyzed with a custom made panel that includes 468 different genes. The data will be analyzed with the Seurat package, which was originally developed for single-cell RNA sequenced but adapted for xenium analysis. In this first chapter we will load the data, create the xenium object and do some quality control to preprocess the data.
+
+# Create Seurat Object
+
+```{r loadXenium}
+xenium_object <- LoadXenium(data.dir = raw_data, fov = "0019329.R3.1658.2022.20240628.095421") #fov = field of view, give the slide a name
+
+saveRDS(xenium_object, file = file.path(data_dir, "1_LoadXeniumObject"))
+```
+
+# Inspect Xenium Object
+
+The xenium object has many different slots such as assays or metadata etc, that can again contain several different objects. A slot can be accessed via @ while a list/object within this slot can be accessed via $. Another way is to set the wanted object in double brackets[[]] (see example below).
+```{r}
+# access metadata
+head(xenium_object@meta.data$nCount_Xenium)
+head(xenium_object[["nCount_Xenium"]]) # this give a dataframe as output
+```
+
+
+## expression matrix
+
+The main element of the Xenium Object is the expression matrix where the colums represent the different cells (e.g. aaaabcdh-1) and rows are the genes (e.g.A2M). 
+
+The xenium platform is a targeted approach, meaning there is a panel of genes that are analyzed (in our case 468 genes, from a custom made panel) instead of the whole transcriptome as in e.g. sequencing based spatial transcriptomic methods or RNA Seq. The expression matrix is a sparse matrix, where most values are zero. To safe space, these zero values are replaced with ".". This matrix is stored in the assay slot -> xenium -> counts. Seurat stores this matrix in the Compressed Sparse Column (CSC) format, which contains p, i and x arrays. p and i are indices important for the sparse matrix, while x represents the actual count values, which will later for example be normalized. 
+
+```{r}
+# count matrix
+xenium_object@assays$Xenium@layers$counts
+
+head(colnames(xenium_object))#cell names
+head(rownames(xenium_object)) #gene names
+
+```
+
+The count matrix is embedded in the layer slot. This is a feature of Seurat V5, which allows you to safe several versions of the matrix, such as normalized or scaled data.
+
+## metadata
+
+The metadata contains information about the dataset such as nCount and nFeatures. These dfs store compact info about the cells
+
+nCount: Number of total transcripts per cell (sum of gene expression values in the expression matrix)
+nFeature: number of unique genes expressed in a cell
+
+In our case, the xenium object also contain quality control info from the run, such as blank and control probes. However these are not so important for our analysis, more of a control that there where no technical problems.
+
+It is a good Idea to look at the distribution of nCount and nFeatures:
+
+```{r}
+# inspect metadata
+summary(xenium_object[["nCount_Xenium"]])
+summary(xenium_object[["nFeature_Xenium"]])
+
+quantile(xenium_object@meta.data$nCount_Xenium, 0.99)
+quantile(xenium_object@meta.data$nFeature_Xenium, 0.01)
+
+sum(xenium_object@meta.data$nCount_Xenium == 0)
+
+vlnplt <- VlnPlot(xenium_object, features = c("nCount_Xenium", "nFeature_Xenium"), pt.size = 0)
+vlnplt
+ggsave(vlnplt, file = paste0(fig_dir,"1_QC_ViolinPlot", ".png"), width = 12, height=12)
+
+plt <- FeatureScatter(xenium_object, feature1 = "nCount_Xenium", feature2 = "nFeature_Xenium", raster = FALSE, pt.size = 0.1)
+plt
+ggsave(plt, file = paste0(fig_dir,"1_QC_CountVSFeature", ".png"), width = 12, height=12)
+
+```
+
+nCounts
+  1st Quartile: 79
+  median: 130
+  mean:   179
+  max:    5065
+  3rd Quartile: 217
+  
+Many cells seem to have a rather low amount of reads, some extreme outliers. The 99% Quantile shows us that 99% of cell have a count of less than 844.
+
+nFeatures:
+  1st quartile: 48
+  median: 67
+  mean:   70.8
+  max:    290
+  3rd quartile: 90 
+
+The data seems to be nicely distributed with some outliers, especially for the count of genes per cell. We will filter these out later. Only 1% of cells have less than 10 features
+
+Only 100 cells have a count of 0. These will be filtered out later.
+
+The scatter and the violin plot also show that the data is mostly distributed in lower count and feature numbers. 
+
+
+# Add TLS information
+
+In this project we are interested in the tertiary lymphoid structure (TLS) in brain metastasis. TLS are aggregates of immune and stromal cells that have T- and B-cell zones. They are thought to be important factors in immunotherapy response and prognosis in primary cancer like  melanoma or lung cancer. So far not much is known about their role in Brain metastasis.(https://www.biorxiv.org/content/10.1101/2024.09.30.614674v1.full.pdf)
+
+Our collaborators already annotated zones they identified as TLS in the csv file tls_mapping contains all samples that we obtained from the collaborators - including several different primary tumors. We want to add this as metadata to our xenium object. 
+
+The tls.mapping file contains a column that consists of the FOV identifier and cell coordinates:
+-> example: 0019329_R3_1658-2022__20240628_095421_aaobgnpk-1
+
+To correctly match the tls status to a cell, we need to extract the coordinates from the column. So first we change the sample column to a column that only contains coordinates. Since the csv file contains information about all cells that were used in the project (other slides) we need to only extract the data that is applicable for our cells. Thus, we then create a new dataframe where the TLS info is fused with the cell names, according to the correct coordinates. This is then added as a new metadata.
+
+
+```{r addTLSinfo}
+#first load the csv file
+infile <- file.path(data_dir, "tls_mapping.csv") 
+tls_mapping <- read.csv(infile)
+
+#change the sample name of each cell from long to only the coordinates
+tls_mapping <- tls_mapping %>%
+  mutate(sample = str_extract(sample, "[^_]+$")) #this extract everything from behind the last underscore
+
+#take all cell coordinates and create a new df
+all_tls <- data.frame(colnames(xenium_object))
+colnames(all_tls) <- c("sample") #why use vector here? it also worked without
+
+#now we join both dfs with left_join. Thus a "1" is added when the sample names in the dfs are the same
+new_df <- left_join(all_tls, tls_mapping, by = "sample")
+new_df[is.na(new_df)] <- 0 #replace N/A with 0
+
+
+tls.status <- new_df["tls"] #creates a new df with the column "tls" from the new_df
+rownames(tls.status) <- make.unique(as.character(new_df$sample)) #rename rows to cell coord, in new_df two samples were duplicated thats make.unique() was added
+tls.status$tls <- as.numeric(tls.status$tls)
+
+#Add meta data to xenium_object
+
+xenium_object <- AddMetaData(object = xenium_object, metadata = tls.status, col.name = "tls.status")
+
+```
+
+
+
+# Filtering
+
+When analyzing spatial transcriptomics, we often apply methods from scRNA seq. However, some aspects of the technologies differ greatly, thus we have to be cautious when using such methods. 
+
+One assumption in scRNA seq is, that the total transcript number (counts) per cell (library size) should not differ much between cells. To avoid that cells cluster due to their differences in libary size rather than biological differences, normalization has to be done. That means, if we see high variation across the number of counts/libary size, we  assume that this is technical and not biological. Thus we normalize the counts so we have comparable library sizes per cell.
+
+"Library size normalization assumes that there are no genes that are only highly expressed in one subset of samples; that is, all samples have similar total gene expression. This assumption is inherently vilated by designing gene panels to include canonical cell type markers for cell tpyes of interest." (https://www.biorxiv.org/content/10.1101/2023.08.30.555624v2.full.pdf)
+
+In the xenium technology, tissue slides embedded in formalin or frozen (fresh) are mounted on specific xenium slides. In comparison to scRNA seq, cells are not dissociated but embedded in the tissue. This could effect how well the reagents can get into the cell. Thus, it is possible that the library sizes differ more compared to scRNA. Darmesh et al. state, that such difference between library sizes might have biological reasons. For example, it is known that tumors are more active and express more genes compared to normal cells. If we would normalize such differences in library size, as is done with scRNA seq data, might cause loss of important biological information.
+(https://genomebiology.biomedcentral.com/articles/10.1186/s13059-024-03241-7#Sec1)
+
+```{r}
+summary(xenium_object@meta.data$nCount_Xenium)
+summary(xenium_object@meta.data$nFeature_Xenium)
+
+
+ImageFeaturePlot(xenium_object, features = c("nCount_Xenium"), size = 0.75, cols = c("white", "red"), max.cutoff = "q99")
+ImageFeaturePlot(xenium_object, features = c("nCount_Xenium"), size = 0.75, cols = c("white", "red"), min.cutoff = "q25", max.cutoff = "q75")
+
+```
+
+We can definitely see differences in regions with higher Counts. Even if we remove outliers by cutting off at the lower and higher quartile, we see lower counts towards the end of the slide and higher counts in the center of the slide (big tissue part). 
+
+# Filtering
+Looking at the data distributions above showed, that most cells (99%) have a count of less than 844. As a more general cutoff we can use 1000. We will still keep most of the cells, but filter out cells that have an unusual high number of counts.
+
+```{r}
+xenium_filtered <- subset(xenium_object, subset = nFeature_Xenium > 11 & nCount_Xenium < 1000 & nCount_Xenium > 0)
+
+vlnplt <- VlnPlot(xenium_filtered, features = c("nCount_Xenium", "nFeature_Xenium"), pt.size = 0)
+vlnplt
+ggsave(vlnplt, file = paste0(fig_dir,"1_QC_ViolinPlot_Xeniumfiltered", ".png"), width = 12, height=12)
+```
+
+Now we reduced our dataset by roughly 10 000 cells, from 496544 to 486949 samples. Notably, although we only cutoff the nCounts at 1000, the nFeature Violin plot is also changed. having a cutoff at roughly 230. This suggests that the cells with high counts also had a high amount of reads had also a lot of different features.
+
+
+# Data Transformation and Scaling
+
+https://genomebiology.biomedcentral.com/articles/10.1186/s13059-024-03241-7
+Normalization: "Explicit library size normalization using sctransform results in poorer domain identification across most datasets,indicating that library size confounds biology in spatial transcriptomics datasets."
+"sctransform resulted in poorer domain identification across most datasets and domain identification methods."
+
+The article by Bhuva et al. (2024) suggests that log transformation (they also call it no normalization) is better for clustering. Thus instead of SCTransform as suggested by the Xenium Seruat vignette (https://satijalab.org/seurat/articles/seurat5_spatial_vignette_2#mouse-brain-10x-genomics-xenium-in-situ) we will logtransform the data.
+
+## Finding Highly Variable Features
+In the normal scRNA-seq workflow, we want to only analyze highly variable genes. Since in RNAseq transcripts from all genes are analyzed, we can assume that most of those genes, such as house keeping genes, do not differ between cells. To analyze the different cell types, we only need the genes that are highly variable between cells, which also reduces compute time in downstream analysis. Since xenium is a targeted approach, meaning we only look at a selection of genes, we do not need to do this step. Looking at the Variable featureplot below shows that all genes detected are accounted for being variable. 
+
+"The selection of Spatial Variable Features (SVF) was found to be an unecessary step in this process due to the targeted nature of the method." https://www.biorxiv.org/content/10.1101/2023.02.13.528102v1.full.pdf
+
+```{r}
+xenium_filtered <- FindVariableFeatures(xenium_filtered, selection.method = "vst", nfeatures = 2000)
+VariableFeaturePlot(xenium_filtered)
+```
+ This plot shows that all genes are recognized as variable. Thus, this step is indeed not necessary here.
+
+## Log Normalization 
+
+The goal of log transformation is to make the data more comparable across cells, reduce extreme values, and stabilize variance. This is essential for downstream analysis techniques like dimensionality reduction (PCA, UMAP) and clustering.
+In log normalization, smaller expression values remain largely unchanged, while larger values are compressed, reducing the dominance of highly expressed genes in the analysis.
+
+Many analysis algorithms, such as PCA, UMAP, and clustering, use Euclidean distance to measure the similarity between cells. In the raw data, distances are based on absolute expression values, which can be dominated by genes with very high counts. Log transformation adjusts these distances so that they are based on relative expression changes. As a result, it ensures that the analysis focuses on biologically meaningful differences rather than being skewed by a few highly expressed genes, making the data more balanced and interpretable. (https://bioconductor.org/books/3.13/OSCA.basic/normalization.html#normalization-transformation)
+
+Here we use the global-scaling normalization method “LogNormalize” that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result. In Seurat v5, Normalized values for xenium objects are stored in a new "data" layer. (https://satijalab.org/seurat/articles/pbmc3k_tutorial#normalizing-the-data)
+
+```{r}
+xenium_lognorm <- NormalizeData(xenium_filtered, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+## Scaling
+
+Scaling is required for further downstream methods such as PCA. The ScaleData function shifts gene expression so that mean expression across all genes is 0 and scales the expression of each gene so that the variance across cells is 1 -> this gives equal weigth to each gene so that the analysis is not skewed by highly expressed genes. The results are then stored in the new layer "ScaleData". (https://satijalab.org/seurat/articles/pbmc3k_tutorial#normalizing-the-data)
+
+```{r}
+xenium_lognorm <- ScaleData(xenium_lognorm, features = rownames(xenium_lognorm), verbose = TRUE)
+```
+
+
+```{r}
+saveRDS(xenium_object, file = file.path(data_dir, "1_Xenium_object.RDS"))
+saveRDS(xenium_filtered, file = file.path(data_dir, "1_Xenium_filtered.RDS"))
+saveRDS(xenium_lognorm, file = file.path(data_dir, "1_Xenium_logtransformed.RDS"))
+```
+
+
+```{r}
+sessionInfo()
+```
+
